@@ -3252,7 +3252,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // ======================== START ========================
 
-httpServer.listen(config.port, () => {
+httpServer.listen(config.port, '0.0.0.0', () => {
   log.info(`listening on http://localhost:${config.port}`);
   log.suspicious('server_start', { port: config.port, production: config.isProduction });
 });
