@@ -101,7 +101,5 @@ export function validatePhone(raw: string): string | null {
   const normalized = '+' + digitsOnly(raw);
   const parsed = parsePhoneNumberFromString(normalized);
   if (parsed?.isValid()) return parsed.number;
-  // Dev fallback: accept any number with valid length even if libphonenumber rejects it
-  if (process.env.NODE_ENV !== 'production' && parsed?.number) return parsed.number;
   return null;
 }

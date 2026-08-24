@@ -32,7 +32,6 @@
     "src/lib/redis.ts",
     "src/lib/storage.ts",
     "src/lib/totp.ts",
-    "src/crypto.worker.ts",
-    "src/phone.ts"
+    "src/crypto.worker.ts"
   ]
 }
