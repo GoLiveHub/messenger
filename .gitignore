@@ -1,0 +1,13 @@
+node_modules/
+dist/
+dist-server/
+data/
+logs/
+.env
+*.log
+*.tsbuildinfo
+*.db
+*.db-wal
+*.db-shm
+playwright-report/
+test-results/

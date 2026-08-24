@@ -1,0 +1,33 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "rootDir": "src",
+    "outDir": "dist-server",
+    "noEmit": false,
+    "isolatedModules": false,
+    "jsx": "react-jsx"
+  },
+  "include": [
+    "src/index.ts",
+    "src/auth.ts",
+    "src/config.ts",
+    "src/crypto.ts",
+    "src/db.ts",
+    "src/helpers.ts",
+    "src/phone.ts",
+    "src/sockets.ts",
+    "src/push.ts",
+    "src/lib/rateLimit.ts",
+    "src/lib/sms.ts",
+    "src/lib/logger.ts",
+    "src/lib/redis.ts",
+    "src/lib/storage.ts",
+    "src/lib/totp.ts",
+    "src/lib/errors.ts"
+  ],
+  "exclude": ["src/components", "src/crypto/**", "src/db/**", "src/main.tsx"]
+}

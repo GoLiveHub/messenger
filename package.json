@@ -1,0 +1,50 @@
+{
+  "name": "messenger-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch src/index.ts",
+    "dev:web": "vite",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.server.json --noEmit",
+    "build:web": "vite build",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build": "npm run typecheck && npm run build:web && npm run build:server",
+    "start": "node dist-server/index.js",
+    "pretest": "npm run build",
+    "test": "node --import tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
+    "@vitejs/plugin-react": "^6.0.5",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "ioredis": "^6.0.0",
+    "libphonenumber-js": "^1.12.15",
+    "multer": "^2.2.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-window": "^2.3.0",
+    "sharp": "^0.35.3",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.3",
+    "vite": "^8.2.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/multer": "^2.2.0",
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@types/react-window": "^1.8.8",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
