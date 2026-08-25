@@ -1753,8 +1753,10 @@ app.put('/api/channels/:id/discussion', (req, res) => {
 
 // --- channel: record message view ---
 app.post('/api/channels/:id/messages/:msgId/view', (req, res) => {
+  const selfId = (req as any).userId;
   const chatId = Number(req.params.id);
   const msgId = Number(req.params.msgId);
+  if (!getChatForUser(chatId, selfId)) return res.status(403).json({ error: 'Not a member' });
   db.prepare('UPDATE messages SET views = views + 1 WHERE id = ? AND chat_id = ?').run(msgId, chatId);
   res.json({ ok: true });
 });

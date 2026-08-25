@@ -259,7 +259,7 @@ export function useMessengerSocket(_token?: string) {
     return () => {
       connected.disconnect();
     };
-  }, []);
+  }, [_token]);
 
   useEffect(() => {
     const onVisible = () => {

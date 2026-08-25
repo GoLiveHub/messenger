@@ -521,10 +521,10 @@ export function ChatWindow() {
         const enc = await encryptSecret(session.sendKey, payload.text);
         cipher = enc.cipher;
         iv = enc.iv;
-        // Advance send ratchet
+        // Advance send ratchet — copy to avoid mutation race with concurrent sends
         const { chainKey: newSendKey } = await ratchetStep(session.sendKey);
-        session.sendKey = newSendKey;
-        session.messageNum++;
+        const updated = { ...session, sendKey: newSendKey, messageNum: session.messageNum + 1 };
+        secretKeys.set(secretKeyId(me!.id, activeChatId), updated);
       }
       return sendMessage({
         chatId: activeChatId,
