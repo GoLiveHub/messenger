@@ -50,7 +50,9 @@ export default function App() {
       .then((user) => {
         applyTheme(user.settings?.theme ?? currentTheme());
         setLang(user.settings?.lang ?? 'ru');
-        if (user.settings?.rtl) document.documentElement.dir = 'rtl';
+        if (user.settings?.rtl) {
+          document.querySelector<HTMLElement>('.app')?.setAttribute('dir', 'rtl');
+        }
         store.set({ me: user });
         void ensureE2EKeys(user.id).catch(() => {});
         void registerPushNotifications();

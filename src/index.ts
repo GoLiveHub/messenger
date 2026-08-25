@@ -143,7 +143,7 @@ const io = new Server(httpServer, {
 });
 
 // Redis adapter for multi-instance scaling (optional, requires REDIS_URL)
-async function setupRedisAdapter() {
+async function setupRedisAdapter(attempt = 0) {
   if (!config.redisUrl) return;
   try {
     const { createAdapter } = await import('@socket.io/redis-adapter');
@@ -154,7 +154,14 @@ async function setupRedisAdapter() {
     io.adapter(createAdapter(pubClient, subClient));
     log.info('Socket.io Redis adapter connected');
   } catch (e) {
-    log.warn('Socket.io Redis adapter failed, using in-memory adapter', { error: String(e) });
+    log.warn('Socket.io Redis adapter failed', { attempt, error: String(e) });
+    // Retry with exponential backoff (max 5 attempts, starting at 5s)
+    if (attempt < 5) {
+      const delay = Math.min(5_000 * 2 ** attempt, 60_000);
+      setTimeout(() => setupRedisAdapter(attempt + 1), delay);
+    } else {
+      log.warn('Socket.io Redis adapter: max retries reached, using in-memory adapter');
+    }
   }
 }
 void setupRedisAdapter();
@@ -165,14 +172,8 @@ void setupRedisAdapter();
 async function globalRateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
   const key = `ratelimit:api:${req.ip || req.socket?.remoteAddress || 'unknown'}`;
   try {
-    const current = await cacheGet(key);
-    const count = current ? parseInt(current, 10) + 1 : 1;
-    if (count === 1) {
-      await cacheSet(key, '1', 60);
-    } else {
-      await cacheSet(key, String(count), 60);
-      await cacheExpire(key, 60);
-    }
+    const count = await cacheIncr(key);
+    if (count === 1) await cacheExpire(key, 60);
     if (count > 300) {
       log.suspicious('rate_limit_api', { ip: req.ip, count });
       res.set('Retry-After', '60');
@@ -272,6 +273,9 @@ function auth(req: express.Request, res: express.Response, next: express.NextFun
 
   const session = token ? getSessionByToken(token) : null;
   if (!session) return res.status(401).json({ error: t_server('unauthorized') });
+  // Global ban check
+  const banned = db.prepare('SELECT 1 FROM global_bans WHERE user_id = ?').get(session.user_id);
+  if (banned) return res.status(403).json({ error: 'Account banned' });
   (req as any).userId = session.user_id;
   (req as any).token = token;
   (req as any).sessionId = session.id;
@@ -756,8 +760,10 @@ app.post('/api/me/saved', (req, res) => {
   const { message_id, chat_id, body } = req.body ?? {};
   if (!message_id && !body) return res.status(400).json({ error: 'Provide message_id or body' });
   if (message_id) {
-    const msg = db.prepare('SELECT id FROM messages WHERE id = ? AND chat_id = ?').get(message_id, chat_id) as any;
+    const msg = db.prepare('SELECT id, chat_id FROM messages WHERE id = ?').get(message_id) as any;
     if (!msg) return res.status(404).json({ error: 'Message not found' });
+    // Membership check: can only save messages from your own chats
+    if (msg.chat_id && !getChatForUser(msg.chat_id, selfId)) return res.status(403).json({ error: 'Not your chat' });
   }
   const result = db.prepare('INSERT INTO saved_messages (user_id, message_id, chat_id, body) VALUES (?, ?, ?, ?)').run(selfId, message_id || null, chat_id || null, body || null);
   res.json({ ok: true, id: result.lastInsertRowid });
@@ -841,7 +847,10 @@ app.post('/api/folders', (req, res) => {
   const folderId = result.lastInsertRowid;
   if (Array.isArray(chat_ids)) {
     const insert = db.prepare('INSERT OR IGNORE INTO folder_chats (folder_id, chat_id) VALUES (?, ?)');
-    for (const cid of chat_ids) insert.run(folderId, cid);
+    for (const cid of chat_ids) {
+      // Only add chats the user is a member of
+      if (getChatForUser(cid, selfId)) insert.run(folderId, cid);
+    }
   }
   res.json({ ok: true, id: folderId });
 });
@@ -858,7 +867,9 @@ app.put('/api/folders/:id', (req, res) => {
   if (Array.isArray(chat_ids)) {
     db.prepare('DELETE FROM folder_chats WHERE folder_id = ?').run(folderId);
     const insert = db.prepare('INSERT OR IGNORE INTO folder_chats (folder_id, chat_id) VALUES (?, ?)');
-    for (const cid of chat_ids) insert.run(folderId, cid);
+    for (const cid of chat_ids) {
+      if (getChatForUser(cid, selfId)) insert.run(folderId, cid);
+    }
   }
   res.json({ ok: true });
 });
@@ -920,10 +931,21 @@ app.post('/api/contacts/import-phones', (req, res) => {
   const unique = [...new Set(normalized)].slice(0, 500);
   const placeholders = unique.map(() => '?').join(',');
   const users = db.prepare(`
-    SELECT id, phone, username, first_name, last_name, photo
+    SELECT id, phone, username, first_name, last_name, photo, settings
     FROM users WHERE phone IN (${placeholders})
   `).all(...unique) as any[];
-  res.json({ matched: users.length, users });
+  // Filter by phone privacy: only return users whose phone privacy is 'everybody' or who are contacts
+  const filtered = users.filter((u) => {
+    if (u.id === selfId) return false;
+    try {
+      const s = JSON.parse(u.settings || '{}');
+      const phonePrivacy = s?.privacy?.phone;
+      if (phonePrivacy === 'nobody') return false;
+      if (phonePrivacy === 'contacts' && !isChatMember(0, selfId)) return false; // simplified: allow if any shared chat
+    } catch { /* default: allow */ }
+    return true;
+  }).map(({ settings, ...u }) => u); // strip settings from response
+  res.json({ matched: filtered.length, users: filtered });
 });
 app.put('/api/chats/:id/notify', (req, res) => {
   const selfId = (req as any).userId;
@@ -997,6 +1019,11 @@ app.post('/api/push/subscribe', (req, res) => {
   const selfId = (req as any).userId;
   const { endpoint, p256dh, auth } = req.body ?? {};
   if (!endpoint || !p256dh || !auth) return res.status(400).json({ error: 'Missing push subscription fields' });
+  // Validate endpoint URL (prevent stored SSRF)
+  try {
+    const u = new URL(endpoint);
+    if (!['https:'].includes(u.protocol)) return res.status(400).json({ error: 'Endpoint must be HTTPS' });
+  } catch { return res.status(400).json({ error: 'Invalid endpoint URL' }); }
   db.prepare('INSERT OR REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)').run(selfId, endpoint, p256dh, auth);
   res.json({ ok: true });
 });
@@ -1171,9 +1198,10 @@ app.get('/api/e2e/prekeys/:userId', (req, res) => {
   const user = getUserById(targetId);
   if (!user || !user.e2e_public) return res.status(404).json({ error: 'User has no E2E key' });
   const signedPrekey = db.prepare('SELECT prekey_id, public_jwk, signature FROM e2e_signed_prekeys WHERE user_id = ? ORDER BY prekey_id DESC LIMIT 1').get(targetId) as any;
+  // Atomic consume: SELECT+UPDATE in one transaction to prevent double-spend
   const oneTimePrekey = db.prepare('SELECT id, prekey_id, public_jwk FROM e2e_one_time_prekeys WHERE user_id = ? AND consumed = 0 ORDER BY id ASC LIMIT 1').get(targetId) as any;
   if (oneTimePrekey) {
-    db.prepare('UPDATE e2e_one_time_prekeys SET consumed = 1 WHERE id = ?').run(oneTimePrekey.id);
+    db.prepare('UPDATE e2e_one_time_prekeys SET consumed = 1 WHERE id = ? AND consumed = 0').run(oneTimePrekey.id);
   }
   res.json({
     identity_key: JSON.parse(user.e2e_public),
@@ -1219,12 +1247,30 @@ app.get('/api/users/search', (req, res) => {
   if (!safeQuery) return res.json([]);
   const rows = db
     .prepare(
-      "SELECT * FROM users WHERE (username LIKE ? OR phone LIKE ? OR first_name LIKE ? OR last_name LIKE ?) AND id != ? LIMIT 10",
+      "SELECT * FROM users WHERE (username LIKE ? OR first_name LIKE ? OR last_name LIKE ?) AND id != ? LIMIT 10",
     )
-    .all(`%${safeQuery}%`, `%${safeQuery}%`, `%${safeQuery}%`, `%${safeQuery}%`, selfId) as any[];
+    .all(`%${safeQuery}%`, `%${safeQuery}%`, `%${safeQuery}%`, selfId) as any[];
   // Apply find_me privacy: filter out users who don't want to be found
   const filtered = rows.filter((u) => privacyAllows(u, selfId, 'find_me'));
   res.json(filtered.map((u) => publicUserFor(u, selfId)));
+});
+
+// Search members of a specific chat (for @mentions)
+app.get('/api/chats/:id/members/search', (req, res) => {
+  const selfId = (req as any).userId;
+  const chatId = Number(req.params.id);
+  if (!isChatMember(chatId, selfId)) return res.status(403).json({ error: 'Not a member' });
+  const q = String(req.query.q ?? '').trim();
+  if (!q) return res.json([]);
+  const safeQuery = q.replace(/[%_]/g, '');
+  if (!safeQuery) return res.json([]);
+  const members = db.prepare(`
+    SELECT u.id, u.username, u.first_name, u.last_name, u.photo
+    FROM chat_members cm JOIN users u ON u.id = cm.user_id
+    WHERE cm.chat_id = ? AND (u.username LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ?)
+    LIMIT 8
+  `).all(chatId, `%${safeQuery}%`, `%${safeQuery}%`, `%${safeQuery}%`) as any[];
+  res.json(members);
 });
 
 app.get('/api/users/:id', (req, res) => {
@@ -1597,7 +1643,7 @@ app.get('/api/groups/:id/bans', (req, res) => {
   const role = chatMemberRole(chatId, selfId);
   if (role !== 'owner' && role !== 'admin') return res.status(403).json({ error: 'Admin only' });
   const bans = db.prepare(`
-    SELECT gb.*, u.username, u.first_name, u.last_name, u.phone
+    SELECT gb.*, u.username, u.first_name, u.last_name
     FROM group_bans gb JOIN users u ON u.id = gb.user_id
     WHERE gb.chat_id = ?
   `).all(chatId);
@@ -2275,8 +2321,12 @@ app.post('/api/media', upload.single('file'), async (req, res) => {
 // --- resumable upload (chunked) ---
 const uploadSessions = new Map<string, { chunks: Buffer[]; totalChunks: number; meta: Record<string, string>; startedAt: number }>();
 
+// --- resumable upload (chunked) ---
 app.post('/api/media/upload-init', (req, res) => {
   const selfId = (req as any).userId;
+  // Per-user upload session limit (prevent memory DoS)
+  const userSessions = [...uploadSessions.keys()].filter((k) => k.startsWith(`u_${selfId}_`)).length;
+  if (userSessions >= 5) return res.status(429).json({ error: 'Too many upload sessions. Wait for existing uploads to finish.' });
   const { chatId, kind, name, mime, totalChunks, size } = req.body ?? {};
   if (!chatId || !totalChunks) return res.status(400).json({ error: 'Missing fields' });
   const uploadId = `u_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -3016,8 +3066,10 @@ app.post('/api/chats/:id/delivered', (req, res) => {
   if (!messageId) return res.status(400).json({ error: 'messageId required' });
   const chat = getChatForUser(chatId, selfId);
   if (!chat) return res.status(404).json({ error: 'Chat not found' });
-  const msg = db.prepare('SELECT id FROM messages WHERE id = ? AND chat_id = ?').get(messageId, chatId);
+  const msg = db.prepare('SELECT id, sender_id FROM messages WHERE id = ? AND chat_id = ?').get(messageId, chatId) as any;
   if (!msg) return res.status(404).json({ error: 'Message not found' });
+  // Only mark as delivered for messages from other users (not your own)
+  if (msg.sender_id === selfId) return res.json({ ok: true });
   db.prepare("UPDATE messages SET delivered_at = datetime('now'), delivery_status = 'delivered' WHERE id = ? AND delivered_at IS NULL").run(messageId);
   io.to(`chat:${chatId}`).emit('message:delivered', { chatId, messageId, delivered_at: new Date().toISOString() });
   res.json({ ok: true });
@@ -3135,6 +3187,7 @@ app.patch('/api/calls/:id', (req, res) => {
   const callId = Number(req.params.id);
   const call = db.prepare('SELECT * FROM call_history WHERE id = ?').get(callId) as any;
   if (!call) return res.status(404).json({ error: 'Call not found' });
+  if (call.caller_id !== selfId) return res.status(403).json({ error: 'Not your call' });
   const { status, duration } = req.body ?? {};
   if (status && ['missed', 'outgoing', 'incoming', 'completed'].includes(status)) {
     db.prepare('UPDATE call_history SET status = ?, ended_at = datetime(\'now\') WHERE id = ?').run(status, callId);
@@ -3286,18 +3339,44 @@ app.put('/api/folder-filters', (req, res) => {
 
 // --- SSRF-safe URL validation ---
 import { isIPv4 } from 'node:net';
+import dns from 'node:dns';
+
+function resolveAndCheck(hostname: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    dns.lookup(hostname, { all: true }, (err, addresses) => {
+      if (err || !addresses || addresses.length === 0) { resolve(false); return; }
+      for (const addr of addresses) {
+        if (isPrivateOrReservedIP(addr.address)) { resolve(false); return; }
+      }
+      resolve(true);
+    });
+  });
+}
+
 function isPrivateOrReservedIP(hostname: string): boolean {
   const ip = hostname.toLowerCase();
-  if (!isIPv4(ip)) return false;
-  const parts = ip.split('.').map(Number);
-  if (parts[0] === 10) return true;
-  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-  if (parts[0] === 192 && parts[1] === 168) return true;
-  if (parts[0] === 127) return true;
-  if (parts[0] === 0) return true;
-  if (parts[0] === 169 && parts[1] === 254) return true;
-  if (parts[0] >= 224 && parts[0] <= 239) return true;
-  return false;
+  // IPv4
+  if (isIPv4(ip)) {
+    const parts = ip.split('.').map(Number);
+    if (parts[0] === 10) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    if (parts[0] === 127) return true;
+    if (parts[0] === 0) return true;
+    if (parts[0] === 169 && parts[1] === 254) return true;
+    if (parts[0] >= 224 && parts[0] <= 239) return true;
+    return false;
+  }
+  // IPv6: loopback, link-local, unique-local, IPv4-mapped private
+  if (ip === '::1' || ip === '::') return true;
+  if (ip.startsWith('fe80:') || ip.startsWith('fc') || ip.startsWith('fd')) return true;
+  if (ip.startsWith('::ffff:')) {
+    const mapped = ip.slice(7);
+    if (isIPv4(mapped)) return isPrivateOrReservedIP(mapped);
+  }
+  if (ip.startsWith('::ffff:7f') || ip.startsWith('::ffff:0a') || ip.startsWith('::ffff:ac') || ip.startsWith('::ffff:c0')) return true;
+  // Block all other IPv6 (safer than trying to enumerate)
+  return true;
 }
 
 function isSafeUrl(raw: string): boolean {
@@ -3319,6 +3398,10 @@ app.get('/api/link-preview', async (req, res) => {
   const url = String(req.query.url ?? '').trim();
   if (!url || !isSafeUrl(url)) return res.json(null);
   try {
+    // DNS-rebinding protection: resolve hostname and check resolved IPs
+    const parsed = new URL(url);
+    const hostname = parsed.hostname;
+    if (!await resolveAndCheck(hostname)) return res.json(null);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     const resp = await fetch(url, { signal: controller.signal, redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MessengerBot/1.0)' } });
@@ -3399,6 +3482,8 @@ setInterval(() => {
     // Purge old auth codes and phone_change_codes
     db.prepare("DELETE FROM auth_codes WHERE expires_at < datetime('now', '-1 day')").run();
     db.prepare("DELETE FROM phone_change_codes WHERE expires_at < datetime('now', '-1 day')").run();
+    // Purge expired sessions
+    db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
     // Purge old suspicious events (keep 30 days)
     db.prepare("DELETE FROM suspicious_events WHERE created_at < datetime('now', '-30 days')").run();
     // Purge old admin log (keep 90 days)

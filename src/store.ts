@@ -83,13 +83,23 @@ let state: AppState = {
 };
 
 const listeners = new Set<() => void>();
+let notifyScheduled = false;
+
+function notifyListeners() {
+  if (notifyScheduled) return;
+  notifyScheduled = true;
+  queueMicrotask(() => {
+    notifyScheduled = false;
+    listeners.forEach((l) => l());
+  });
+}
 
 function setState(patch: Partial<AppState>) {
   state = { ...state, ...patch };
   if (patch.activeChatId !== undefined) {
     try { localStorage.setItem('activeChatId', String(patch.activeChatId)); } catch { /* ignore */ }
   }
-  listeners.forEach((l) => l());
+  notifyListeners();
 }
 
 export const store = {

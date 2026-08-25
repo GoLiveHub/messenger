@@ -100,9 +100,18 @@ export function connectSocket(_token: string, handlers: ChatEvents): Socket {
       for (const action of queue) {
         try {
           if (action.type === 'message:send') {
-            socket!.timeout(15_000).emit('message:send', action.payload, () => {});
+            // Wait for server ack before removing from queue
+            const ok = await new Promise<boolean>((resolve) => {
+              socket!.timeout(15_000).emit('message:send', action.payload, (err: Error | null, res?: { ok?: boolean }) => {
+                resolve(!err && res?.ok !== false);
+              });
+            });
+            if (ok) await dequeueSync(action.id);
+            // If not ok, leave in queue for next reconnect
+          } else {
+            // Unknown action type — remove to prevent infinite retry
+            await dequeueSync(action.id);
           }
-          await dequeueSync(action.id);
         } catch { /* leave in queue for next attempt */ }
       }
     } catch { /* ignore */ }

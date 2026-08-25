@@ -5463,18 +5463,60 @@ body.no-effects * {
 }
 
 /* --- RTL overrides --- */
-[dir="rtl"] .chat-header { direction: rtl; }
-[dir="rtl"] .composer { direction: rtl; }
-[dir="rtl"] .bubble-text { direction: rtl; text-align: right; }
-[dir="rtl"] .pinned-bar { direction: rtl; }
-[dir="rtl"] .chat-item-body { direction: rtl; }
-[dir="rtl"] .bubble.mine { direction: rtl; }
-[dir="rtl"] .bubble.theirs { direction: rtl; }
-[dir="rtl"] .left-rail { direction: rtl; }
-[dir="rtl"] .sidebar { direction: rtl; }
-[dir="rtl"] .reply-bar { direction: rtl; }
-[dir="rtl"] .mention-autocomplete { direction: rtl; }
-[dir="rtl"] .link-preview { direction: rtl; }
+.app[dir="rtl"] .chat-header { direction: rtl; }
+.app[dir="rtl"] .composer { direction: rtl; }
+.app[dir="rtl"] .bubble-text { direction: rtl; text-align: right; }
+.app[dir="rtl"] .pinned-bar { direction: rtl; }
+.app[dir="rtl"] .chat-item-body { direction: rtl; }
+.app[dir="rtl"] .bubble.mine { direction: rtl; }
+.app[dir="rtl"] .bubble.theirs { direction: rtl; }
+.app[dir="rtl"] .left-rail { direction: rtl; }
+.app[dir="rtl"] .sidebar { direction: rtl; }
+.app[dir="rtl"] .reply-bar { direction: rtl; }
+.app[dir="rtl"] .mention-autocomplete { direction: rtl; }
+.app[dir="rtl"] .link-preview { direction: rtl; }
+/* Force LTR on inputs/selects inside RTL to prevent mirrored native elements */
+.app[dir="rtl"] input,
+.app[dir="rtl"] select,
+.app[dir="rtl"] textarea,
+.app[dir="rtl"] .code-input-box input { direction: ltr; text-align: left; }
+
+/* --- Photo Crop Modal --- */
+.photo-crop-modal { text-align: center; max-width: 360px; }
+.photo-crop-modal h2 { margin: 0 0 1rem; }
+.crop-viewport {
+  position: relative;
+  width: 240px; height: 240px;
+  margin: 0 auto 1rem;
+  border-radius: 50%;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  background: var(--color-item-hover);
+}
+.crop-viewport:active { cursor: grabbing; }
+.crop-viewport img {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  user-select: none;
+}
+.crop-circle {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,0.6);
+  pointer-events: none;
+}
+.crop-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.crop-controls input[type="range"] { flex: 1; }
 
 /* ============================================================
    PWA install prompt

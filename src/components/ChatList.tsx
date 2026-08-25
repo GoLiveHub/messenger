@@ -91,6 +91,11 @@ export function ChatList() {
       store.set({ chats: cs });
       store.set({ users: { ...store.get().users, ...peersToUsers(cs) } });
       setChatsLoaded(true);
+      // Validate activeChatId against loaded chats
+      const current = store.get().activeChatId;
+      if (current != null && !cs.some((c) => c.chat.id === current)) {
+        store.set({ activeChatId: null });
+      }
       cs.forEach((c) => { cacheChat(c as unknown as Record<string, unknown>).catch(() => {}); });
     });
     api.getDrafts().then((drafts) => {

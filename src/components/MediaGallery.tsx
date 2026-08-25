@@ -167,7 +167,7 @@ export function MediaGallery({ chatId, onClose }: { chatId: number; onClose: () 
           <div className="overlay-catch" onClick={() => setLightbox(null)} />
           <div className="gallery-lightbox">
             <button className="icon-btn gallery-lb-close" onClick={() => setLightbox(null)}><CloseIcon size={28} /></button>
-            <img src={urlCache[lightbox.id] ?? ''} alt={lightbox.name} />
+            {urlCache[lightbox.id] ? <img src={urlCache[lightbox.id]} alt={lightbox.name} /> : <div className="gallery-lb-placeholder">{t('Loading…')}</div>}
           </div>
         </>
       )}

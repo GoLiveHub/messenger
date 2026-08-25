@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 export function Avatar({
   user,
   size,
@@ -10,12 +12,14 @@ export function Avatar({
   const photo = user?.photo;
   const initials =
     [user?.first_name, user?.last_name].filter(Boolean).map((s) => (s as string)[0]?.toUpperCase()).join('') || '?';
+  const [imgFailed, setImgFailed] = useState(false);
+  const showPhoto = photo && !imgFailed;
   return (
     <div
-      className={`avatar${photo ? ' has-photo' : ''}`}
+      className={`avatar${showPhoto ? ' has-photo' : ''}`}
       style={size ? { width: size, height: size, fontSize: size * 0.42 } : undefined}
     >
-      {photo ? <img className="avatar-img" src={photo} alt="" /> : initials}
+      {showPhoto ? <img className="avatar-img" src={photo} alt="" onError={() => setImgFailed(true)} /> : initials}
       {online && <span className="online-dot" />}
     </div>
   );

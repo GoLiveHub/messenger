@@ -34,8 +34,10 @@ export function verifyPassword(password: string, stored: string): boolean {
 // --- Server-side encryption at rest (regular chats) ---
 // AES-256-GCM. The server key is derived from the secret so no key file is needed.
 
+let _atRestKey: Buffer | null = null;
 function atRestKey(): Buffer {
-  return crypto.createHash('sha256').update(config.serverSecret + ':at-rest-v1').digest();
+  if (!_atRestKey) _atRestKey = crypto.createHash('sha256').update(config.serverSecret + ':at-rest-v1').digest();
+  return _atRestKey;
 }
 
 export function encryptAtRest(plaintext: Buffer): { body: Buffer; iv: Buffer } {

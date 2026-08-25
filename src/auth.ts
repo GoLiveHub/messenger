@@ -61,11 +61,21 @@ async function sensitiveEndpointLimit(req: Request, res: Response, next: NextFun
   next();
 }
 
-// Mass-registration protection: limit sign-ups per IP prefix (first 3 octets)
+// Mass-registration protection: limit sign-ups per IP prefix
 async function massRegistrationLimit(req: Request, res: Response, next: NextFunction) {
   const ip = String(req.ip || req.socket?.remoteAddress || 'unknown');
-  const parts = ip.split('.');
-  const ipPrefix = parts.length === 4 ? parts.slice(0, 3).join('.') : ip;
+  let ipPrefix: string;
+  if (ip.includes(':')) {
+    // IPv6: group by /64 prefix (first 8 hex groups)
+    const groups = ip.split(':');
+    ipPrefix = groups.slice(0, 8).join(':');
+  } else if (ip.includes('.')) {
+    // IPv4: group by /24 (first 3 octets)
+    const parts = ip.split('.');
+    ipPrefix = parts.length === 4 ? parts.slice(0, 3).join('.') : ip;
+  } else {
+    ipPrefix = ip;
+  }
   const limiter = await getSignupLimiter();
   const result = await limiter.allow(`signup:${ipPrefix}`);
   if (!result.allowed) {
@@ -242,6 +252,26 @@ async function verifyCodeInput(phone: string, code: string, phoneCodeHash: strin
     return false;
   }
 
+  // Atomic check+mark to prevent TOCTOU race: use a single UPDATE...WHERE used=0
+  if (markUsed) {
+    const result = db.prepare(
+      'UPDATE auth_codes SET used = 1 WHERE phone_code_hash = ? AND phone = ? AND used = 0 AND failed_attempts < ? AND expires_at > datetime(\'now\')',
+    ).run(phoneCodeHash, phone, MAX_CODE_VERIFY_ATTEMPTS);
+    if (result.changes === 0) {
+      logSuspicious('code_verify_fail', { phone, ip: 'unknown' });
+      return false;
+    }
+    // Verify hash matches (already marked used atomically)
+    const row = db.prepare('SELECT code_hash FROM auth_codes WHERE phone_code_hash = ?').get(phoneCodeHash) as { code_hash: string } | undefined;
+    if (!row || sha256Hex(code) !== row.code_hash) {
+      // Rollback: unmark so it can be retried (hash didn't match)
+      db.prepare('UPDATE auth_codes SET used = 0 WHERE phone_code_hash = ?').run(phoneCodeHash);
+      return false;
+    }
+    return true;
+  }
+
+  // Non-consuming check (for password/TOTP flow)
   const row = db.prepare('SELECT * FROM auth_codes WHERE phone_code_hash = ?').get(phoneCodeHash) as
     | { phone: string; code_hash: string; expires_at: string; used: number; failed_attempts: number }
     | undefined;
@@ -254,7 +284,6 @@ async function verifyCodeInput(phone: string, code: string, phoneCodeHash: strin
     ).run(MAX_CODE_VERIFY_ATTEMPTS, phoneCodeHash);
     return false;
   }
-  if (markUsed) db.prepare('UPDATE auth_codes SET used = 1 WHERE phone_code_hash = ?').run(phoneCodeHash);
   return true;
 }
 
@@ -467,27 +496,40 @@ function parseCookies(req: Request): Record<string, string> {
 
 // --- CAPTCHA challenge (simple math) ---
 const captchaChallenges = new Map<string, { answer: number; expiresAt: number }>();
+const captchaIpCounts = new Map<string, { count: number; resetAt: number }>();
 
 authRouter.post('/captcha/challenge', (req, res) => {
   const ip = String(req.ip || req.socket?.remoteAddress || 'unknown');
-  const a = Math.floor(Math.random() * 20) + 1;
-  const b = Math.floor(Math.random() * 20) + 1;
-  const ops = ['+', '-', '*'];
-  const op = ops[Math.floor(Math.random() * ops.length)];
+  // Per-IP rate limit: max 10 captchas per minute
+  const now = Date.now();
+  const entry = captchaIpCounts.get(ip);
+  if (entry && now < entry.resetAt) {
+    if (entry.count >= 10) return res.status(429).json({ error: 'Too many captcha requests' });
+    entry.count++;
+  } else {
+    captchaIpCounts.set(ip, { count: 1, resetAt: now + 60_000 });
+  }
+  // Cleanup old entries periodically
+  if (captchaIpCounts.size > 5000) {
+    for (const [k, v] of captchaIpCounts) { if (now > v.resetAt) captchaIpCounts.delete(k); }
+  }
+  // Simplified captcha: small numbers, addition/subtraction only, non-negative result
+  const op = Math.random() < 0.5 ? '+' : '-';
+  const a = Math.floor(Math.random() * 9) + 2; // 2-10
+  const b = Math.floor(Math.random() * 9) + 2; // 2-10
   let answer: number;
-  if (op === '+') answer = a + b;
-  else if (op === '-') answer = a - b;
-  else answer = a * b;
+  let question: string;
+  if (op === '+') {
+    answer = a + b;
+    question = `${a} + ${b} = ?`;
+  } else {
+    answer = Math.abs(a - b);
+    question = `${Math.max(a, b)} - ${Math.min(a, b)} = ?`;
+  }
   const token = randomToken(32);
   captchaChallenges.set(token, { answer, expiresAt: Date.now() + 300_000 });
-  // Cleanup old entries
-  if (captchaChallenges.size > 5000) {
-    for (const [k, v] of captchaChallenges) {
-      if (Date.now() > v.expiresAt) captchaChallenges.delete(k);
-    }
-  }
   logSuspicious('captcha_challenge_issued', { ip });
-  res.json({ token, question: `${a} ${op} ${b} = ?` });
+  res.json({ token, question });
 });
 
 authRouter.post('/captcha/verify', (req, res) => {

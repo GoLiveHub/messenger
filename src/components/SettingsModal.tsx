@@ -347,6 +347,9 @@ function PrivacyTab({ me }: { me: User }) {
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [recoveryCount, setRecoveryCount] = useState<number | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  const [showChangePass, setShowChangePass] = useState(false);
+  const [currentPass, setCurrentPass] = useState('');
+  const [newPass, setNewPass] = useState('');
   const [privacy, setPrivacy] = useState<Record<PrivacyKey, PrivacyValue>>({
     last_seen: 'everybody',
     phone: 'everybody',
@@ -395,14 +398,14 @@ function PrivacyTab({ me }: { me: User }) {
   };
 
   const changePass = async () => {
-    const cur = prompt(t('Current password'));
-    if (cur === null) return;
-    const next = prompt(t('New password'));
-    if (next === null || next.length < 4) { setMsg(t('New password too short')); return; }
+    if (newPass.length < 4) { setMsg(t('New password too short')); return; }
     try {
-      const res = await api.setup2FA({ password: next, recovery_email: rec || undefined, current_password: cur || undefined });
+      const res = await api.setup2FA({ password: newPass, recovery_email: rec || undefined, current_password: currentPass || undefined });
       setMsg(t('Password changed'));
       store.set({ me: res.user });
+      setShowChangePass(false);
+      setCurrentPass('');
+      setNewPass('');
     } catch (e) {
       setMsg((e as Error).message);
     }
@@ -502,7 +505,18 @@ function PrivacyTab({ me }: { me: User }) {
       {with2FA ? (
         <>
           <div className="notice">{t('2FA is enabled')}</div>
-          <button className="mini" onClick={changePass}>{t('Change password')}</button>
+          {showChangePass ? (
+            <div className="pass-change-inline">
+              <input placeholder={t('Current password')} type="password" value={currentPass} onChange={(e) => setCurrentPass(e.target.value)} />
+              <input placeholder={t('New password')} type="password" value={newPass} onChange={(e) => setNewPass(e.target.value)} />
+              <div className="row-buttons">
+                <button className="mini" onClick={changePass}>{t('Save')}</button>
+                <button className="mini" onClick={() => { setShowChangePass(false); setCurrentPass(''); setNewPass(''); }}>{t('Cancel')}</button>
+              </div>
+            </div>
+          ) : (
+            <button className="mini" onClick={() => setShowChangePass(true)}>{t('Change password')}</button>
+          )}
           <input placeholder={t('Password to disable')} value={turnOff} onChange={(e) => setTurnOff(e.target.value)} />
           <button className="mini danger" onClick={disable2FA}>{t('Disable 2FA')}</button>
         </>
@@ -746,7 +760,7 @@ function LangTab({ me }: { me: User }) {
   const toggleRtl = async () => {
     const next = !rtl;
     setRtl(next);
-    document.documentElement.dir = next ? 'rtl' : 'ltr';
+    document.querySelector<HTMLElement>('.app')?.setAttribute('dir', next ? 'rtl' : 'ltr');
     try {
       await patchSettings({ rtl: next });
       setMsg(t('Saved'));
@@ -779,6 +793,7 @@ function StorageTab() {
 
   const exportAll = async () => {
     setExporting(true);
+    let url: string | null = null;
     try {
       const all = [];
       for (const c of chats) {
@@ -788,12 +803,13 @@ function StorageTab() {
         all.push({ chat: c.peer?.username ?? c.chat.title ?? c.chat.id, type: c.chat.kind, messages: out });
       }
       const blob = new Blob([JSON.stringify(all, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
+      url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = 'messenger-export.json';
       a.click();
     } finally {
+      if (url) URL.revokeObjectURL(url);
       setExporting(false);
     }
   };

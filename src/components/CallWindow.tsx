@@ -136,7 +136,8 @@ export function CallWindow() {
 
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') {
-        store.set({ activeCall: activeCall ? { ...activeCall, status: 'connected' } : null });
+        const current = store.get().activeCall;
+        store.set({ activeCall: current ? { ...current, status: 'connected' } : null });
         if (!timerRef.current) {
           timerRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
         }
@@ -149,7 +150,7 @@ export function CallWindow() {
     };
 
     return pc;
-  }, [activeCall, callId]);
+  }, [callId]);
 
   // Handle incoming call: accept and create answer
   useEffect(() => {

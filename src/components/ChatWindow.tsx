@@ -222,6 +222,8 @@ export function ChatWindow() {
   const [undoToast, setUndoToast] = useState<{ messageId: number; chatId: number; timer: ReturnType<typeof setTimeout> } | null>(null);
   const [loadError, setLoadError] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollSentinelRef = useRef<IntersectionObserver | null>(null);
+  const linkPreviewPendingRef = useRef<Set<string>>(new Set());
   const searchRef = useRef<HTMLInputElement>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const readSentFor = useRef<Set<number>>(new Set());
@@ -746,14 +748,17 @@ export function ChatWindow() {
     } else {
       setMentionQuery(null);
     }
-    // Link preview detection
+    // Link preview detection (debounced)
     const urlMatch = val.match(/https?:\/\/[^\s]+/);
     if (urlMatch) {
       const url = urlMatch[0];
-      if (!linkPreviews[url]) {
-        api.getLinkPreview(url).then((preview) => {
-          if (preview) setLinkPreviews((prev) => ({ ...prev, [url]: preview }));
-        }).catch(() => {});
+      if (!linkPreviews[url] && !linkPreviewPendingRef.current.has(url)) {
+        linkPreviewPendingRef.current.add(url);
+        setTimeout(() => {
+          api.getLinkPreview(url).then((preview) => {
+            if (preview) setLinkPreviews((prev) => ({ ...prev, [url]: preview }));
+          }).catch(() => {}).finally(() => linkPreviewPendingRef.current.delete(url));
+        }, 500);
       }
     }
   };
@@ -1373,7 +1378,10 @@ export function ChatWindow() {
         )}
         {/* Lazy-load sentinel: load older messages when scrolled to top */}
         <div ref={(el) => {
-          if (!el || !activeChatId) return;
+          // Cleanup previous observer
+          const prev = scrollSentinelRef.current;
+          if (prev) { try { prev.disconnect(); } catch {} }
+          if (!el || !activeChatId) { scrollSentinelRef.current = null; return; }
           const observer = new IntersectionObserver(
             (entries) => {
               if (entries[0]?.isIntersecting && msgs.length > 0 && !loadError) {
@@ -1384,7 +1392,7 @@ export function ChatWindow() {
             { root: scrollRef.current, threshold: 0.1 },
           );
           observer.observe(el);
-          return () => observer.disconnect();
+          scrollSentinelRef.current = observer;
         }} className="scroll-sentinel" style={{ height: 1 }} />
         {loadError && (
           <div className="empty-state">
@@ -1997,16 +2005,19 @@ function MessageRowInner(props: {
           : !msg.decrypted?.decryptError && text && (
               <span className="bubble-text">{highlight ? highlightText(text, highlight) : formatMarkdown(text, onHashtagClick)}</span>
             )}
-        {msg.link_preview && (
+        {msg.link_preview && (() => {
+          try { new URL(msg.link_preview.url); } catch { return null; }
+          return (
           <a href={msg.link_preview.url} target="_blank" rel="noopener noreferrer" className="link-preview">
             {msg.link_preview.image && <img src={msg.link_preview.image} alt="" className="link-preview-img" />}
             <div className="link-preview-info">
               {msg.link_preview.title && <b className="link-preview-title">{msg.link_preview.title}</b>}
               {msg.link_preview.description && <span className="link-preview-desc">{msg.link_preview.description}</span>}
-              <span className="link-preview-url">{(() => { try { return new URL(msg.link_preview.url).hostname; } catch { return ''; } })()}</span>
+              <span className="link-preview-url">{new URL(msg.link_preview.url).hostname}</span>
             </div>
           </a>
-        )}
+          );
+        })()}
         {!editing && (
           <span className="bubble-meta">
             {msg.edited_at && <span className="edited">{t('edited')}</span>}
@@ -2068,6 +2079,7 @@ function Lightbox({ media, onClose, fileKey }: { media: MediaDTO; onClose: () =>
     }
     return () => { alive = false; };
   }, [media.id, fileKey]);
+  useEffect(() => { return () => { if (url && url.startsWith('blob:')) URL.revokeObjectURL(url); }; }, [url]);
   return (
     <div className="lightbox" onClick={onClose}>
       <button className="icon-btn lightbox-close" onClick={onClose} title={t('Close')}>

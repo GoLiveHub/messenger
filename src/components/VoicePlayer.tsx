@@ -57,6 +57,10 @@ export function VoicePlayer({ media, e2eFileKey }: { media: MediaDTO; e2eFileKey
   }, [media.id, e2eFileKey]);
 
   useEffect(() => {
+    return () => { if (url && url.startsWith('blob:')) URL.revokeObjectURL(url); };
+  }, [url]);
+
+  useEffect(() => {
     const audio = audioRef.current;
     if (audio) audio.playbackRate = speed;
   }, [speed]);

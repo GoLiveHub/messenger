@@ -70,14 +70,13 @@ export function BirthdayPicker({
     setDay((d) => clampDay(d, month, y));
   };
 
-  const years = useMemo(() => {
-    const now = new Date().getFullYear();
+  const now = new Date();
+  const years = (() => {
+    const currentYear = now.getFullYear();
     const list: number[] = [];
-    for (let y = now; y >= now - 100; y--) list.push(y);
+    for (let y = currentYear; y >= currentYear - 100; y--) list.push(y);
     return list;
-  }, []);
-
-  const today = new Date();
+  })();
 
   const save = () => {
     if (!monthNum || !dayNum) return;

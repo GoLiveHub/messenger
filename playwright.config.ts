@@ -1,17 +1,19 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const port = Number(process.env.PORT) || 3001;
+
 export default defineConfig({
   testDir: 'tests/e2e',
   timeout: 30_000,
   retries: 0,
   use: {
-    baseURL: 'http://127.0.0.1:3001',
+    baseURL: `http://127.0.0.1:${port}`,
     headless: true,
     screenshot: 'only-on-failure',
   },
   webServer: {
     command: 'npm run dev',
-    port: 3001,
+    port,
     reuseExistingServer: true,
     timeout: 30_000,
   },

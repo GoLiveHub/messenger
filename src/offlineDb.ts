@@ -4,8 +4,13 @@
 const DB_NAME = 'messenger_offline';
 const DB_VERSION = 1;
 
+let sharedDb: IDBDatabase | null = null;
+let sharedDbPromise: Promise<IDBDatabase> | null = null;
+
 function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (sharedDb && sharedDb.objectStoreNames.length > 0) return Promise.resolve(sharedDb);
+  if (sharedDbPromise) return sharedDbPromise;
+  sharedDbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
@@ -22,9 +27,15 @@ function openDB(): Promise<IDBDatabase> {
         q.createIndex('created_at', 'created_at', { unique: false });
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      sharedDb = req.result;
+      req.result.onclose = () => { sharedDb = null; sharedDbPromise = null; };
+      req.result.onerror = () => { sharedDb = null; sharedDbPromise = null; };
+      resolve(req.result);
+    };
+    req.onerror = () => { sharedDbPromise = null; reject(req.error); };
   });
+  return sharedDbPromise;
 }
 
 async function dbPut<T>(storeName: string, value: T): Promise<void> {
@@ -122,6 +133,28 @@ export async function getCachedUsers(): Promise<Record<string, unknown>[]> {
 // --- Media blob cache ---
 export async function cacheMediaBlob(id: number, blob: Blob): Promise<void> {
   await dbPut('media_blobs', { id, blob, cached_at: Date.now() });
+  // Evict oldest entries if cache exceeds 200 MB (check periodically)
+  try {
+    const db = await openDB();
+    const tx = db.transaction('media_blobs', 'readwrite');
+    const store = tx.objectStore('media_blobs');
+    const countReq = store.count();
+    countReq.onsuccess = () => {
+      if (countReq.result > 500) {
+        // Delete oldest entries
+        const cursorReq = store.openCursor();
+        let deleted = 0;
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (cursor && deleted < 100) {
+            cursor.delete();
+            deleted++;
+            cursor.continue();
+          }
+        };
+      }
+    };
+  } catch { /* ignore eviction errors */ }
 }
 
 export async function getCachedMediaBlob(id: number): Promise<Blob | undefined> {

@@ -51,8 +51,10 @@ export function generateTotp(secret: string, time?: number): string {
 
 export function verifyTotp(secret: string, token: string, window = 1): boolean {
   const now = Math.floor(Date.now() / 1000);
+  const tokenBuf = Buffer.from(token, 'utf8');
   for (let i = -window; i <= window; i++) {
-    if (generateTotp(secret, now + i * PERIOD) === token) return true;
+    const expected = generateTotp(secret, now + i * PERIOD);
+    if (tokenBuf.length === expected.length && crypto.timingSafeEqual(tokenBuf, Buffer.from(expected, 'utf8'))) return true;
   }
   return false;
 }

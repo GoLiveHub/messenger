@@ -30,7 +30,12 @@ export async function compressImage(
 
   return new Promise((resolve) => {
     canvas.toBlob(
-      (blob) => resolve(blob ?? file),
+      (blob) => {
+        // Release canvas bitmap memory
+        canvas.width = 0;
+        canvas.height = 0;
+        resolve(blob ?? file);
+      },
       'image/jpeg',
       quality,
     );

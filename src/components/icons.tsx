@@ -584,3 +584,20 @@ export const BotIcon = (p: IconProps) => (
     <circle cx="12" cy="2" r="1" />
   </Svg>
 );
+
+export const ZoomInIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="M21 21l-4.35-4.35" />
+    <path d="M8 11h6" />
+    <path d="M11 8v6" />
+  </Svg>
+);
+
+export const ZoomOutIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="M21 21l-4.35-4.35" />
+    <path d="M8 11h6" />
+  </Svg>
+);

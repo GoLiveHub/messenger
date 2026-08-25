@@ -4,6 +4,7 @@ import { store } from '../store';
 import { Avatar } from './Avatar';
 import { loadImage, resizeToDataUrl } from '../lib/image';
 import { BirthdayPicker, formatBirthday } from './BirthdayPicker';
+import { PhotoCropModal } from './PhotoCropModal';
 import { t, useLang } from '../i18n';
 import { useFocusTrap, useEscapeKey } from '../hooks';
 import {
@@ -105,6 +106,7 @@ function ProfileEdit({ user, onCancel }: { user: User; onCancel: () => void }) {
   const [showBirthday, setShowBirthday] = useState(false);
   const [msg, setMsg] = useState('');
   const [saving, setSaving] = useState(false);
+  const [cropSrc, setCropSrc] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   useLang();
 
@@ -114,7 +116,7 @@ function ProfileEdit({ user, onCancel }: { user: User; onCancel: () => void }) {
     if (!file) return;
     try {
       const img = await loadImage(file);
-      setPhoto(resizeToDataUrl(img, 512, 0.85));
+      setCropSrc(resizeToDataUrl(img, 512, 0.85));
     } catch (err) {
       setMsg((err as Error).message);
     }
@@ -212,6 +214,14 @@ function ProfileEdit({ user, onCancel }: { user: User; onCancel: () => void }) {
           }}
           onRemove={removeBirthday}
           onClose={() => setShowBirthday(false)}
+        />
+      )}
+
+      {cropSrc && (
+        <PhotoCropModal
+          src={cropSrc}
+          onCrop={(dataUrl) => { setPhoto(dataUrl); setCropSrc(null); }}
+          onClose={() => setCropSrc(null)}
         />
       )}
     </div>

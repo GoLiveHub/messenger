@@ -99,6 +99,7 @@ interface ActiveCall {
   chatId: number;
   callType: 'audio' | 'video';
   startTime: number;
+  answeredAt?: number;
 }
 const activeCalls = new Map<string, ActiveCall>();
 
@@ -135,12 +136,28 @@ function sharesChat(a: number, b: number): boolean {
   );
 }
 
+/** Get all user IDs who share a chat with the given user (batch query). */
+function sharedChatUserIds(userId: number): Set<number> {
+  const ids = db.prepare(`
+    SELECT DISTINCT u2.user_id as id FROM chat_members u1
+    JOIN chat_members u2 ON u2.chat_id = u1.chat_id AND u2.user_id != ?
+    WHERE u1.user_id = ?
+    UNION
+    SELECT CASE WHEN user_a_id = ? THEN user_b_id ELSE user_a_id END as id
+    FROM chats WHERE kind IN ('regular','secret') AND (user_a_id = ? OR user_b_id = ?) AND (user_a_id != ? OR user_b_id != ?)
+  `).all(userId, userId, userId, userId, userId, userId, userId) as { id: number }[];
+  const s = new Set<number>();
+  for (const r of ids) s.add(r.id);
+  return s;
+}
+
 // Emit presence only to viewers allowed by the owner's "Last seen & online" privacy.
 function broadcastPresence(io: Server, userId: number, online: boolean) {
   const target = getUserById(userId);
   if (!target) return;
+  const shared = sharedChatUserIds(userId);
   for (const viewerId of presence.keys()) {
-    if (!sharesChat(userId, viewerId)) continue;
+    if (viewerId === userId || !shared.has(viewerId)) continue;
     if (!privacyAllows(target, viewerId, 'last_seen')) continue;
     io.to(`user:${viewerId}`).emit('presence', { userId, online });
     io.to(`user:${viewerId}`).emit(online ? 'user:online' : 'user:offline', { userId });
@@ -148,11 +165,13 @@ function broadcastPresence(io: Server, userId: number, online: boolean) {
 }
 
 function emitInitialPresence(io: Server, viewerId: number) {
+  const shared = sharedChatUserIds(viewerId);
   for (const [userId, sockets] of presence) {
-    if (userId === viewerId || sockets.size === 0 || !sharesChat(userId, viewerId)) continue;
+    if (userId === viewerId || sockets.size === 0 || !shared.has(userId)) continue;
     const target = getUserById(userId);
     if (target && privacyAllows(target, viewerId, 'last_seen')) {
       io.to(`user:${viewerId}`).emit('presence', { userId, online: true });
+      io.to(`user:${viewerId}`).emit('user:online', { userId });
     }
   }
 }
@@ -200,6 +219,9 @@ export function registerSockets(io: Server) {
 
     const userId = getUserIdByToken(token);
     if (!userId) return next(new Error('Unauthorized'));
+    // Global ban check
+    const banned = db.prepare('SELECT 1 FROM global_bans WHERE user_id = ?').get(userId);
+    if (banned) return next(new Error('Account banned'));
     socket.data.userId = userId;
     socket.data.token = token;
     next();
@@ -268,8 +290,8 @@ export function registerSockets(io: Server) {
         // Spam filter: per-user rate limit (20 msgs/10s in dev, 5 msgs/10s in production)
         const spamKey = `spam:${selfId}`;
         const spamEntry = (globalThis as any).__spam ??= {};
-        // Cleanup stale entries every 1000 users
-        if (Object.keys(spamEntry).length > 1000) {
+        // Cleanup stale entries every 100 users (was 1000, too rare)
+        if (Object.keys(spamEntry).length > 100) {
           for (const k of Object.keys(spamEntry)) { if (now - spamEntry[k].start >= 30_000) delete spamEntry[k]; }
         }
         const spamLimit = process.env.NODE_ENV === 'production' ? 5 : 20;
@@ -686,6 +708,7 @@ export function registerSockets(io: Server) {
           const createdAt = new Date((db.prepare('SELECT created_at FROM messages WHERE id = ?').get(messageId) as { created_at: string }).created_at).getTime();
           if (Date.now() - createdAt > 48 * 60 * 60 * 1000) return ack?.({ ok: false, error: 'Delete window expired (48h)' });
           db.prepare('UPDATE messages SET deleted = 1, body = NULL, iv = NULL WHERE id = ?').run(messageId);
+          try { db.prepare('DELETE FROM messages_fts WHERE rowid = ?').run(messageId); } catch { /* FTS may not have entry */ }
           io.to(room(chatId)).emit('message:deleted', { chatId, messageId });
           ack?.({ ok: true });
         }
@@ -783,6 +806,18 @@ export function registerSockets(io: Server) {
             url: `/chat/${chatId}`,
           }).catch(() => {});
         }
+
+        // Ringing timeout: auto-end call after 60s if not answered
+        const RING_TIMEOUT = 60_000;
+        setTimeout(() => {
+          const c = activeCalls.get(callId);
+          if (c && !c.answeredAt) {
+            activeCalls.delete(callId);
+            db.prepare("INSERT INTO call_history (chat_id, caller_id, call_type, status, duration) VALUES (?, ?, ?, 'missed', 0)").run(c.chatId, c.callerId, c.callType);
+            io.to(`user:${c.callerId}`).emit('call:ended', { callId });
+            io.to(`user:${c.calleeId}`).emit('call:ended', { callId });
+          }
+        }, RING_TIMEOUT);
       } catch (e) {
         console.error('call:init error', e);
       }
@@ -862,6 +897,7 @@ export function registerSockets(io: Server) {
         const call = activeCalls.get(callId);
         if (!call) return;
         if (call.callerId !== selfId && call.calleeId !== selfId) return;
+        call.answeredAt = Date.now();
 
         const targetId = call.callerId === selfId ? call.calleeId : call.callerId;
         io.to(`user:${targetId}`).emit('call:answer', {
@@ -880,9 +916,8 @@ export function registerSockets(io: Server) {
         if (!call) return;
         if (call.callerId !== selfId && call.calleeId !== selfId) return;
 
-        const duration = Math.floor((Date.now() - call.startTime) / 1000);
-        const wasAnswered = duration > 0;
-        const status = wasAnswered ? 'completed' : 'missed';
+        const duration = call.answeredAt ? Math.floor((Date.now() - call.answeredAt) / 1000) : 0;
+        const status = call.answeredAt ? 'completed' : 'missed';
 
         db.prepare(
           "INSERT INTO call_history (chat_id, caller_id, call_type, status, duration) VALUES (?, ?, ?, ?, ?)",
@@ -925,6 +960,7 @@ export function registerSockets(io: Server) {
     socket.on('group-call:leave', (payload) => {
       try {
         const chatId = Number(payload.chatId);
+        if (!isChatMember(chatId, selfId)) return;
         const participants = groupCalls.get(chatId);
         if (participants) {
           participants.delete(selfId);
@@ -983,6 +1019,14 @@ export function registerSockets(io: Server) {
     });
 
     socket.on('disconnect', () => {
+      // Clear typing state for all chat rooms this user is in
+      for (const roomName of socket.rooms) {
+        if (roomName.startsWith('chat:')) {
+          const cid = Number(roomName.split(':')[1]);
+          if (cid) io.to(roomName).emit('typing', { chatId: cid, userId: selfId, isTyping: false });
+        }
+      }
+
       // Clean up any active call for this socket
       const callId = socketCalls.get(socket.id);
       if (callId) {
@@ -1067,12 +1111,12 @@ export function getChatMessages(chatId: number, selfId: number, offset = 0, limi
       const expiry = new Date(r.expires_at).getTime();
       if (expiry <= now) {
         db.prepare('UPDATE messages SET deleted = 1, body = NULL, iv = NULL WHERE id = ?').run(r.id);
-        continue;
+        r.deleted = 1; // mark so it's excluded from results
       }
     }
   }
 
-  return filtered.map((r) => {
+  return filtered.filter((r) => !r.deleted).map((r) => {
     const body = r.body ? Buffer.from(r.body as Uint8Array) : null;
     const iv = r.iv ? Buffer.from(r.iv as Uint8Array) : null;
     const media = r.media_id ? getMediaById(r.media_id) : null;

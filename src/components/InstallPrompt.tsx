@@ -17,6 +17,7 @@ export function InstallPrompt() {
 
   useEffect(() => {
     if (installed) return;
+    if (localStorage.getItem('install_dismissed') === '1') return;
     const onPrompt = (e: Event) => {
       e.preventDefault();
       setDeferred(e as BeforeInstallPromptEvent);
@@ -61,6 +62,7 @@ export function InstallPrompt() {
         onClick={() => {
           setVisible(false);
           setDeferred(null);
+          localStorage.setItem('install_dismissed', '1');
         }}
       >
         <CloseIcon size={16} />
