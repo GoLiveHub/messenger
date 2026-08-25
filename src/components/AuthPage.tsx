@@ -83,6 +83,27 @@ export function AuthPage() {
     }
   };
 
+  // Auto-send code after captcha is verified (avoids stale showCaptcha state)
+  useEffect(() => {
+    if (captchaVerified && step === 'phone' && phoneValid) {
+      setCaptchaVerified(false);
+      (async () => {
+        setLoading(true);
+        try {
+          const res = await api.sendCode(phone);
+          setPhoneCodeHash(res.phone_code_hash);
+          setCode(res.dev_code ?? '');
+          setStep('code');
+        } catch (err) {
+          const msg = (err as Error).message;
+          setError(msg.includes('Wait') ? t('Please wait before requesting another code.') : msg);
+        } finally {
+          setLoading(false);
+        }
+      })();
+    }
+  }, [captchaVerified, step, phoneValid]);
+
   const onPhoneChange = (inputVal: string) => {
     const d = digitsOnly(inputVal);
     if (d.length === 0) {

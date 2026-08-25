@@ -381,8 +381,6 @@ app.patch('/api/me', (req, res) => {
     return res.status(400).json({ error: 'Birthday must be YYYY-MM-DD or MM-DD' });
   }
   let username = req.body?.username !== undefined ? String(req.body.username).trim().replace(/^@/, '') : user.username;
-  const passwordBody = req.body?.password;
-  const password = passwordBody === undefined ? user.password : passwordBody === null ? null : String(passwordBody);
   const photo = req.body?.photo !== undefined ? validPhoto(req.body.photo) : user.photo;
 
   if (!firstName) return res.status(400).json({ error: 'First name is required' });
@@ -392,20 +390,15 @@ app.patch('/api/me', (req, res) => {
   if (username !== user.username && getUserByUsername(username)) {
     return res.status(409).json({ error: 'Username is taken' });
   }
-  if (password !== null && password.length > 0 && password.length < 6) {
-    return res.status(400).json({ error: 'Password too short' });
-  }
   if (photo === null && req.body?.photo !== undefined && req.body.photo !== '' && req.body.photo !== null) {
     return res.status(400).json({ error: 'Invalid photo' });
   }
 
-  const newPassword = password === null ? user.password : password === '' ? null : hashPassword(password);
-  db.prepare('UPDATE users SET first_name = ?, last_name = ?, bio = ?, username = ?, password = ?, photo = ?, birthday = ? WHERE id = ?').run(
+  db.prepare('UPDATE users SET first_name = ?, last_name = ?, bio = ?, username = ?, photo = ?, birthday = ? WHERE id = ?').run(
     firstName,
     lastName,
     bio,
     username,
-    newPassword,
     photo,
     birthday || null,
     selfId,
@@ -444,7 +437,7 @@ function sanitizeSettings(body: any, existing: Record<string, unknown>): Record<
   if (p && typeof p === 'object') {
     const prev = (existing.privacy ?? {}) as Record<string, unknown>;
     const out: Record<string, unknown> = { ...prev };
-    for (const k of ['last_seen', 'phone', 'photo', 'bio', 'groups', 'forwarded']) {
+    for (const k of ['last_seen', 'phone', 'photo', 'bio', 'birthday', 'groups', 'forwarded', 'find_me']) {
       const v = p[k];
       if (v === 'everybody' || v === 'contacts' || v === 'nobody') out[k] = v;
     }
@@ -670,15 +663,13 @@ app.delete('/api/me', (req, res) => {
   }
   db.exec('PRAGMA foreign_keys = OFF');
   try {
-    // Delete messages from all chats owned/Member of
-    db.prepare('DELETE FROM messages WHERE chat_id IN (SELECT chat_id FROM chat_members WHERE user_id = ?)').run(selfId);
+    // Delete only the user's OWN messages (not other participants')
     db.prepare('DELETE FROM messages WHERE sender_id = ?').run(selfId);
     // Delete media + storage blobs
     const ownedMedia = db.prepare('SELECT storage_key FROM media WHERE sender_id = ?').all(selfId) as { storage_key?: string }[];
     for (const m of ownedMedia) {
       if (m.storage_key) deleteFile(m.storage_key).catch(() => {});
     }
-    db.prepare('DELETE FROM media WHERE chat_id IN (SELECT chat_id FROM chat_members WHERE user_id = ?)').run(selfId);
     db.prepare('DELETE FROM media WHERE sender_id = ?').run(selfId);
     // Delete reactions
     db.prepare('DELETE FROM reactions WHERE user_id = ?').run(selfId);
@@ -786,6 +777,7 @@ app.post('/api/me/scheduled', (req, res) => {
   const { chat_id, body, media_id, reply_to, scheduled_at } = req.body ?? {};
   if (!chat_id || !body || !scheduled_at) return res.status(400).json({ error: 'chat_id, body, and scheduled_at required' });
   if (new Date(scheduled_at).getTime() <= Date.now()) return res.status(400).json({ error: 'scheduled_at must be in the future' });
+  if (!getChatForUser(Number(chat_id), selfId)) return res.status(404).json({ error: 'Chat not found' });
   const result = db.prepare('INSERT INTO scheduled_messages (user_id, chat_id, body, media_id, reply_to, scheduled_at) VALUES (?, ?, ?, ?, ?, ?)').run(selfId, chat_id, body, media_id || null, reply_to || null, scheduled_at);
   res.json({ ok: true, id: result.lastInsertRowid });
 });
@@ -1940,8 +1932,15 @@ app.delete('/api/chats/:id', (req, res) => {
 app.delete('/api/chats/:id/messages', (req, res) => {
   const selfId = (req as any).userId;
   const chatId = Number(req.params.id);
-  if (!getChatForUser(chatId, selfId)) {
+  const chat = getChatForUser(chatId, selfId);
+  if (!chat) {
     return res.status(404).json({ error: 'Chat not found' });
+  }
+  if (isGroupChat(chat)) {
+    const role = chatMemberRole(chatId, selfId);
+    if (role !== 'owner' && role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can clear history' });
+    }
   }
   db.prepare('UPDATE messages SET deleted = 1, body = NULL, iv = NULL WHERE chat_id = ?').run(chatId);
   db.prepare('UPDATE chats SET pinned_id = NULL WHERE id = ?').run(chatId);
@@ -2495,6 +2494,7 @@ registerSockets(io);
 
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/socket.io') || req.path.startsWith('/media')) return next();
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(distPath, 'index.html'));
 });
 
@@ -3247,6 +3247,12 @@ function gracefulShutdown(signal: string) {
   }, 5_000);
 }
 
+process.on('unhandledRejection', (reason) => {
+  log.error('unhandledRejection', { reason: String(reason) });
+});
+process.on('uncaughtException', (err) => {
+  log.error('uncaughtException', { error: err.message, stack: err.stack });
+});
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
@@ -3351,6 +3357,7 @@ setInterval(() => {
     const pending = db.prepare(`SELECT * FROM scheduled_messages WHERE sent = 0 AND scheduled_at <= datetime('now')`).all() as any[];
     for (const sm of pending) {
       try {
+        if (!getChatForUser(sm.chat_id, sm.user_id)) { db.prepare('UPDATE scheduled_messages SET sent = 1 WHERE id = ?').run(sm.id); continue; }
         db.prepare('UPDATE scheduled_messages SET sent = 1 WHERE id = ?').run(sm.id);
         const enc = encryptAtRest(sm.body ?? '');
         db.prepare('INSERT INTO messages (chat_id, sender_id, body, iv, media_id, reply_to) VALUES (?, ?, ?, ?, ?, ?)').run(sm.chat_id, sm.user_id, enc.body, enc.iv, sm.media_id, sm.reply_to);

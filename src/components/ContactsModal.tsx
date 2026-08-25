@@ -2,7 +2,7 @@ import { useApp, store } from '../store';
 import { Avatar } from './Avatar';
 import { api, type User } from '../api';
 import { CloseIcon, UsersIcon, SearchIcon, LockIcon, MegaphoneIcon, DownloadIcon } from './icons';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { t, useLang } from '../i18n';
 import { useFocusTrap, useEscapeKey } from '../hooks';
 import { NewGroupModal } from './NewGroupModal';
@@ -49,7 +49,10 @@ export function ContactsModal({ onClose }: { onClose: () => void }) {
     onClose();
   };
 
+  const creatingRef = useRef(false);
   const start = async (peerId: number, kind: 'regular' | 'secret') => {
+    if (creatingRef.current) return;
+    creatingRef.current = true;
     setNotice('');
     try {
       const res = await api.createChat(peerId, kind);
@@ -58,6 +61,8 @@ export function ContactsModal({ onClose }: { onClose: () => void }) {
       onClose();
     } catch (err) {
       setNotice((err as Error).message);
+    } finally {
+      creatingRef.current = false;
     }
   };
 

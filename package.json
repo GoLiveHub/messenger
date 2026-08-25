@@ -14,7 +14,7 @@
     "build:web": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
     "build": "npm run typecheck && npm run build:web && npm run build:server",
-    "start": "node dist-server/index.js",
+    "start": "node --env-file=.env dist-server/index.js",
     "pretest": "npm run build",
     "test": "node --import tsx --test tests/*.test.ts"
   },

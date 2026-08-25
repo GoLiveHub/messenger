@@ -1099,20 +1099,8 @@ export function ChatWindow() {
     }
   };
 
-  if (!chat || (!peer && !isGroup)) {
-    return (
-      <main className="chat-window empty-chat">
-        <div className="empty-state">
-          <span className="empty-state-icon"><SendIcon size={56} /></span>
-          <b>{t('Select a chat to start messaging')}</b>
-          <span>{t('Use the search on the left to find a user, or pick an existing conversation.')}</span>
-        </div>
-      </main>
-    );
-  }
-
+  // --- hooks MUST be above any early return (Rules of Hooks) ---
   const hist = history[activeChatId!] ?? {};
-  // In forum mode only show messages of the selected topic (null = General)
   const visibleMsgs: StoredMessage[] = useMemo(
     () => (isForum ? msgs.filter((m) => (m.topic_id ?? null) === activeTopicId) : msgs),
     [msgs, isForum, activeTopicId],
@@ -1134,9 +1122,22 @@ export function ChatWindow() {
     return result;
   }, [shownMsgs]);
 
-  const replyBar = replyTo ? { name: replyTo.name, text: replyTo.text || t('Deleted message') } : null;
   const pinnedIds = useMemo(() => chat?.chat.pinned_messages ?? (chat?.chat.pinned_id ? [chat.chat.pinned_id] : []), [chat?.chat.pinned_messages, chat?.chat.pinned_id]);
   const pinnedMsgs = useMemo(() => pinnedIds.map((id) => msgs.find((m) => m.id === id)).filter(Boolean) as LayoutMsg[], [pinnedIds, msgs]);
+
+  if (!chat || (!peer && !isGroup)) {
+    return (
+      <main className="chat-window empty-chat">
+        <div className="empty-state">
+          <span className="empty-state-icon"><SendIcon size={56} /></span>
+          <b>{t('Select a chat to start messaging')}</b>
+          <span>{t('Use the search on the left to find a user, or pick an existing conversation.')}</span>
+        </div>
+      </main>
+    );
+  }
+
+  const replyBar = replyTo ? { name: replyTo.name, text: replyTo.text || t('Deleted message') } : null;
 
   return (
     <main className="chat-window">
@@ -1999,7 +2000,7 @@ function MessageRowInner(props: {
             <div className="link-preview-info">
               {msg.link_preview.title && <b className="link-preview-title">{msg.link_preview.title}</b>}
               {msg.link_preview.description && <span className="link-preview-desc">{msg.link_preview.description}</span>}
-              <span className="link-preview-url">{new URL(msg.link_preview.url).hostname}</span>
+              <span className="link-preview-url">{(() => { try { return new URL(msg.link_preview.url).hostname; } catch { return ''; } })()}</span>
             </div>
           </a>
         )}

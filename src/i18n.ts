@@ -171,6 +171,7 @@ const ru: Record<string, string> = {
   'Pin': 'Закрепить',
   'Unpin': 'Открепить',
   'Pinned message': 'Закреплённое сообщение',
+  'Pinned messages': '{n} закреплённых',
   'Pinned': 'Закреплено',
   'Pin chat': 'Закрепить чат',
   'Unpin chat': 'Открепить чат',

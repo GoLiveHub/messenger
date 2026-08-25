@@ -268,6 +268,10 @@ export function registerSockets(io: Server) {
         // Spam filter: per-user rate limit (20 msgs/10s in dev, 5 msgs/10s in production)
         const spamKey = `spam:${selfId}`;
         const spamEntry = (globalThis as any).__spam ??= {};
+        // Cleanup stale entries every 1000 users
+        if (Object.keys(spamEntry).length > 1000) {
+          for (const k of Object.keys(spamEntry)) { if (now - spamEntry[k].start >= 30_000) delete spamEntry[k]; }
+        }
         const spamLimit = process.env.NODE_ENV === 'production' ? 5 : 20;
         const spamWindow = spamEntry[spamKey] ?? { count: 0, start: now };
         if (now - spamWindow.start >= 10_000) {
@@ -586,35 +590,39 @@ export function registerSockets(io: Server) {
     });
 
     socket.on('typing', (payload) => {
-      const chatId = Number(payload.chatId);
-      const isTyping = Boolean(payload.isTyping);
-      if (!getChatForUser(chatId, selfId)) return;
-      socket.to(room(chatId)).emit('typing', { chatId, userId: selfId, isTyping });
+      try {
+        const chatId = Number(payload.chatId);
+        const isTyping = Boolean(payload.isTyping);
+        if (!getChatForUser(chatId, selfId)) return;
+        socket.to(room(chatId)).emit('typing', { chatId, userId: selfId, isTyping });
+      } catch { /* ignore */ }
     });
 
     socket.on('message:read', (payload) => {
-      const chatId = Number(payload.chatId);
-      const messageId = Number(payload.messageId);
-      const chat = getChatForUser(chatId, selfId);
-      if (!chat) return;
-      if (!db.prepare('SELECT 1 FROM messages WHERE id = ? AND chat_id = ? AND deleted = 0').get(messageId, chatId)) return;
-      const now = new Date().toISOString();
-      if (isGroupChat(chat)) {
-        const prev = getChatMember(chatId, selfId);
-        if (prev && messageId > prev.last_read_id) {
-          db.prepare('UPDATE chat_members SET last_read_id = ? WHERE chat_id = ? AND user_id = ?').run(
-            messageId,
-            chatId,
-            selfId,
-          );
+      try {
+        const chatId = Number(payload.chatId);
+        const messageId = Number(payload.messageId);
+        const chat = getChatForUser(chatId, selfId);
+        if (!chat) return;
+        if (!db.prepare('SELECT 1 FROM messages WHERE id = ? AND chat_id = ? AND deleted = 0').get(messageId, chatId)) return;
+        const now = new Date().toISOString();
+        if (isGroupChat(chat)) {
+          const prev = getChatMember(chatId, selfId);
+          if (prev && messageId > prev.last_read_id) {
+            db.prepare('UPDATE chat_members SET last_read_id = ? WHERE chat_id = ? AND user_id = ?').run(
+              messageId,
+              chatId,
+              selfId,
+            );
+          }
+          io.to(room(chatId)).emit('message:read', { chatId, messageId, userId: selfId, read_at: now });
+          return;
         }
+        db.prepare(
+          'UPDATE messages SET read_at = ? WHERE chat_id = ? AND sender_id != ? AND id <= ? AND read_at IS NULL',
+        ).run(now, chatId, selfId, messageId);
         io.to(room(chatId)).emit('message:read', { chatId, messageId, userId: selfId, read_at: now });
-        return;
-      }
-      db.prepare(
-        'UPDATE messages SET read_at = ? WHERE chat_id = ? AND sender_id != ? AND id <= ? AND read_at IS NULL',
-      ).run(now, chatId, selfId, messageId);
-      io.to(room(chatId)).emit('message:read', { chatId, messageId, userId: selfId, read_at: now });
+      } catch { /* ignore */ }
     });
 
     socket.on('message:edit', (payload, ack) => {
@@ -792,6 +800,7 @@ export function registerSockets(io: Server) {
         const callId = String(payload.callId ?? '');
         const call = activeCalls.get(callId);
         if (!call) return;
+        if (selfId !== call.callerId && selfId !== call.calleeId) return;
 
         // Record missed call in history
         db.prepare(

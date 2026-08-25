@@ -37,6 +37,7 @@ export function MediaGallery({ chatId, onClose }: { chatId: number; onClose: () 
     setLoading(true);
     try {
       const items = await api.chatMedia(chatId, 50, before);
+      if (items.length === 0) { setLoading(false); return; }
       setMedia((prev) => (before ? [...prev, ...items] : items));
     } catch { /* ignore */ }
     setLoading(false);
