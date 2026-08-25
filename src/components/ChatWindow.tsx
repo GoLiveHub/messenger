@@ -14,6 +14,7 @@ import { EditGroupModal } from './EditGroupModal';
 import { MentionAutocomplete } from './MentionAutocomplete';
 import { t, tx, useLang } from '../i18n';
 import { formatBytes, downloadMedia, getMediaUrl } from '../media';
+import { cacheMessages } from '../offlineDb';
 import type React from 'react';
 import {
   SearchIcon,
@@ -189,7 +190,7 @@ function formatMarkdown(text: string, onHashtag?: (tag: string) => void): React.
 
 export function ChatWindow() {
   useLang();
-  const { me, chats, messages, activeChatId, online, typing, forwardOpen, users } = useApp();
+  const { me, chats, messages, activeChatId, online, typing, forwardOpen, users, features, socketConnected } = useApp();
   const [draft, setDraft] = useState('');
   const [history, setHistory] = useState<Record<number, Record<number, { text: string; decryptError?: boolean; fileKey?: string }>>>({});
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -312,6 +313,7 @@ export function ChatWindow() {
       } else {
         setMessages(chatId, list);
       }
+      cacheMessages(list as unknown as Array<Record<string, unknown>>).catch(() => {});
       return list;
     } catch {
       setLoadError(true);
@@ -1158,7 +1160,7 @@ export function ChatWindow() {
               {isSecret && (
                 <span className="lock" title={t('Secret chat — end-to-end encrypted')}><LockIcon size={15} /></span>
               )}
-              {isChannel && (
+        {isChannel && (
                 <span className="lock" title={t('Channel')}><MegaphoneIcon size={15} /></span>
               )}
             </b>
@@ -1173,8 +1175,9 @@ export function ChatWindow() {
             )}
           </div>
         </button>
-        <div className="chat-header-actions">
-          <button className="icon-btn" title={t('Details')} onClick={() => store.set({ infoOpen: true })}>
+          <div className="chat-header-actions">
+            {!socketConnected && <span className="chat-header-status reconnecting" title={t('Reconnecting…')}>{t('Reconnecting…')}</span>}
+            <button className="icon-btn" title={t('Details')} onClick={() => store.set({ infoOpen: true })}>
             <InfoIcon size={20} />
           </button>
           <button
@@ -1616,7 +1619,7 @@ export function ChatWindow() {
             </button>
           )}
         </form>
-        {isChannel && (
+        {isChannel && features?.scheduledMessages !== false && (
           <div className="schedule-bar">
             <button type="button" className="icon-btn" title={t('Schedule message')} onClick={() => setScheduleOpen((o) => !o)}>
               <ClockIcon size={18} />
@@ -2018,7 +2021,7 @@ function MessageRowInner(props: {
             )}
             {mine && !msg.failed && (
               <span className={`ticks ${msg.pending ? '' : read ? '' : msg.delivered_at ? '' : 'gray'}`}>
-                {msg.pending ? <ClockIcon size={14} /> : read ? <CheckCheckIcon size={14} /> : msg.delivered_at ? <CheckCheckIcon size={14} /> : <CheckIcon size={14} />}
+                {msg.pending ? <ClockIcon size={14} /> : read ? <CheckCheckIcon size={14} /> : msg.delivered_at ? <CheckIcon size={14} /> : <CheckIcon size={14} />}
               </span>
             )}
           </span>

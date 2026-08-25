@@ -59,6 +59,8 @@ interface AppState {
   users: Record<number, User>;
   groupMembers: Record<number, GroupMemberDTO[]>;
   activeCall: ActiveCallState | null;
+  features: { calls: boolean; e2eSecretChats: boolean; scheduledMessages: boolean; folders: boolean } | null;
+  socketConnected: boolean;
 }
 
 let state: AppState = {
@@ -76,6 +78,8 @@ let state: AppState = {
   users: {},
   groupMembers: {},
   activeCall: null,
+  features: null,
+  socketConnected: false,
 };
 
 const listeners = new Set<() => void>();

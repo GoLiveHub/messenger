@@ -10,6 +10,7 @@ import { setTheme } from '../theme';
 import { t, useLang } from '../i18n';
 import { clearE2EKeyCache } from '../crypto/ensureKeys';
 import { clearMediaCache } from '../media';
+import { cacheChat } from '../offlineDb';
 import {
   MenuIcon,
   SearchIcon,
@@ -53,7 +54,7 @@ function mediaPreview(kind?: string | null): string {
 
 export function ChatList() {
   useLang();
-  const { me, chats, online, activeChatId, folder, users } = useApp();
+  const { me, chats, online, activeChatId, folder, users, features } = useApp();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Awaited<ReturnType<typeof api.searchUsers>> | null>(null);
   const [notice, setNotice] = useState('');
@@ -90,6 +91,7 @@ export function ChatList() {
       store.set({ chats: cs });
       store.set({ users: { ...store.get().users, ...peersToUsers(cs) } });
       setChatsLoaded(true);
+      cs.forEach((c) => { cacheChat(c as unknown as Record<string, unknown>).catch(() => {}); });
     });
     api.getDrafts().then((drafts) => {
       const map: Record<number, string> = {};
@@ -286,6 +288,7 @@ export function ChatList() {
               </button>
               <div className="search-actions">
                 <button onClick={() => openChat(u.id, 'regular')}>{t('Chat')}</button>
+                {features?.e2eSecretChats !== false && (
                 <button
                   className={u.e2e_public ? '' : 'disabled'}
                   onClick={() => openChat(u.id, 'secret')}
@@ -294,6 +297,7 @@ export function ChatList() {
                 >
                   <LockIcon size={15} /> {t('Secret')}
                 </button>
+                )}
               </div>
             </div>
           ))}

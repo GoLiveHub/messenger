@@ -35,7 +35,7 @@ function fullName(u?: { first_name?: string; last_name?: string } | null): strin
 
 export function ChatInfoPanel() {
   useLang();
-  const { activeChatId, chats, messages, online, me, groupMembers } = useApp();
+  const { activeChatId, chats, messages, online, me, groupMembers, features } = useApp();
   const [blocked, setBlocked] = useState(false);
   const [archived, setArchived] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
@@ -335,7 +335,7 @@ export function ChatInfoPanel() {
                 </div>
               </details>
             )}
-            {!isSecret && peer!.e2e_public && (
+            {!isSecret && peer!.e2e_public && features?.e2eSecretChats !== false && (
               <button className="info-action" onClick={startSecret}>
                 <LockIcon size={15} /> {t('Start secret chat')}
               </button>
@@ -423,7 +423,7 @@ export function ChatInfoPanel() {
         </div>
       )}
 
-      {!isGroup && peer!.phone && (
+      {!isGroup && peer!.phone && features?.calls !== false && (
         <div className="info-call">
           <button
             className="info-call-btn"

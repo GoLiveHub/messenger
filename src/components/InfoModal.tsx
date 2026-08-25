@@ -1,9 +1,11 @@
 import { LockIcon, ShieldIcon, DeviceIcon, FolderIcon, StickerIcon, DatabaseIcon, CloseIcon } from './icons';
 import { t, useLang } from '../i18n';
 import { useFocusTrap, useEscapeKey } from '../hooks';
+import { store } from '../store';
 
 function features() {
-  return [
+  const f = store.get().features;
+  const items = [
     { icon: LockIcon, title: t('Password protection_title'), text: t('Password protection_text') },
     { icon: ShieldIcon, title: t('Secret chats_title'), text: t('Secret chats_text') },
     { icon: DeviceIcon, title: t('Active sessions_title'), text: t('Active sessions_text') },
@@ -11,6 +13,11 @@ function features() {
     { icon: StickerIcon, title: t('Stickers and emoji_title'), text: t('Stickers and emoji_text') },
     { icon: DatabaseIcon, title: t('Data export_title'), text: t('Data export_text') },
   ];
+  return items.filter((item) => {
+    if (item.title === t('Secret chats_title') && f?.e2eSecretChats === false) return false;
+    if (item.title === t('Chat folders_title') && f?.folders === false) return false;
+    return true;
+  });
 }
 
 export function InfoModal({ onClose }: { onClose: () => void }) {

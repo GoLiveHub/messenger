@@ -28,7 +28,7 @@ function unreadForFolder(chats: ReturnType<typeof useApp>['chats'], folderId: Fo
 
 export function LeftRail() {
   useLang();
-  const { folder, chats } = useApp();
+  const { folder, chats, features } = useApp();
 
   const totalUnread = chats.reduce((s, c) => s + c.unread, 0);
 
@@ -39,7 +39,7 @@ export function LeftRail() {
   return (
     <nav className="left-rail" aria-label={t('Chat folders')}>
       <div className="left-rail-items" role="tablist" aria-label={t('Chat folders')}>
-        {FOLDERS.map((f) => {
+        {FOLDERS.filter((f) => f.id !== 'secret' || features?.e2eSecretChats !== false).map((f) => {
           const unread = unreadForFolder(chats, f.id);
           return (
             <button

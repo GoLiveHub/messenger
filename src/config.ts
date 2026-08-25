@@ -44,6 +44,13 @@ export const config = {
   dataRetentionDays: Number(process.env.DATA_RETENTION_DAYS || '365'),
   // Tenor GIF API
   tenorApiKey: process.env.TENOR_API_KEY || '',
+  // Feature flags (disabled in production until audited)
+  features: {
+    calls: !isProduction,
+    e2eSecretChats: !isProduction,
+    scheduledMessages: !isProduction,
+    folders: !isProduction,
+  },
   // Logging
   logLevel: process.env.LOG_LEVEL || 'info',
 };

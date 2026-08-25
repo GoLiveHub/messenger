@@ -87,6 +87,13 @@ export function connectSocket(_token: string, handlers: ChatEvents): Socket {
   socket.on('error', authFailed);
   // Flush offline sync queue on reconnect
   socket.on('connect', async () => {
+    window.dispatchEvent(new Event('messenger:socket-connected'));
+    // Re-join active chat room on reconnect
+    try {
+      const { store } = await import('./store');
+      const activeChatId = store.get().activeChatId;
+      if (activeChatId) socket!.emit('chat:join', { chatId: activeChatId });
+    } catch { /* ignore */ }
     try {
       const { getSyncQueue, dequeueSync } = await import('./offlineDb');
       const queue = await getSyncQueue();
@@ -99,6 +106,9 @@ export function connectSocket(_token: string, handlers: ChatEvents): Socket {
         } catch { /* leave in queue for next attempt */ }
       }
     } catch { /* ignore */ }
+  });
+  socket.on('disconnect', () => {
+    window.dispatchEvent(new Event('messenger:socket-disconnected'));
   });
   return socket;
 }

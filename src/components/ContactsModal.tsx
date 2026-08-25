@@ -8,7 +8,7 @@ import { useFocusTrap, useEscapeKey } from '../hooks';
 import { NewGroupModal } from './NewGroupModal';
 
 export function ContactsModal({ onClose }: { onClose: () => void }) {
-  const { chats, online } = useApp();
+  const { chats, online, features } = useApp();
   useLang();
   useEscapeKey(onClose);
   const trapRef = useFocusTrap(true);
@@ -154,7 +154,7 @@ export function ContactsModal({ onClose }: { onClose: () => void }) {
               </div>
               <div className="contact-actions">
                 <button onClick={() => { void start(u.id, 'regular'); }}>{t('Message')}</button>
-                {u.e2e_public && (
+                {u.e2e_public && features?.e2eSecretChats !== false && (
                   <button className={u.e2e_public ? '' : 'disabled'} onClick={() => { void start(u.id, 'secret'); }} title={t('Secret chat')}>
                     <LockIcon size={13} /> {t('Secret')}
                   </button>

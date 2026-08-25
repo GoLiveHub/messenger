@@ -37,7 +37,7 @@ function savedWidth(): number {
 }
 
 export default function App() {
-  const { me, settingsOpen, infoOpen, adminOpen, activeChatId, activeCall } = useApp();
+  const { me, settingsOpen, infoOpen, adminOpen, activeChatId, activeCall, features } = useApp();
   const [hydrated, setHydrated] = useState(false);
   const [sidebarW, setSidebarW] = useState(savedWidth);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
@@ -54,6 +54,8 @@ export default function App() {
         store.set({ me: user });
         void ensureE2EKeys(user.id).catch(() => {});
         void registerPushNotifications();
+        // Load feature flags
+        api.getFeatures().then((features) => store.set({ features })).catch(() => {});
       })
       .catch(() => {
         // No valid session cookie — user needs to log in.
@@ -170,7 +172,7 @@ export default function App() {
           <AdminPanel onClose={() => store.set({ adminOpen: false })} />
         </Suspense>
       )}
-      {activeCall && <CallWindow />}
+      {features?.calls !== false && activeCall && <CallWindow />}
       <InstallPrompt />
     </div>
   );

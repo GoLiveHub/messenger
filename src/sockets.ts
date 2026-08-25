@@ -640,6 +640,10 @@ export function registerSockets(io: Server) {
         if (row.sender_id !== selfId) return ack?.({ ok: false, error: 'Cannot edit other messages' });
         if (row.e2e) return ack?.({ ok: false, error: 'Secret messages cannot be edited server-side' });
 
+        // 48h edit window
+        const createdAt = new Date((db.prepare('SELECT created_at FROM messages WHERE id = ?').get(messageId) as { created_at: string }).created_at).getTime();
+        if (Date.now() - createdAt > 48 * 60 * 60 * 1000) return ack?.({ ok: false, error: 'Edit window expired (48h)' });
+
         const oldRow = db.prepare('SELECT body, iv FROM messages WHERE id = ?').get(messageId) as { body: Buffer | null; iv: Buffer | null } | undefined;
         if (oldRow?.body && oldRow?.iv) {
           db.prepare('INSERT INTO edit_history (message_id, user_id, old_body, old_iv) VALUES (?, ?, ?, ?)').run(messageId, selfId, oldRow.body, oldRow.iv);
@@ -677,8 +681,10 @@ export function registerSockets(io: Server) {
           db.prepare('UPDATE messages SET deleted_for = ? WHERE id = ?').run(JSON.stringify(deletedFor), messageId);
           ack?.({ ok: true });
         } else {
-          // Delete for everyone: only sender can do this
+          // Delete for everyone: only sender can do this, within 48h window
           if (row.sender_id !== selfId) return ack?.({ ok: false, error: 'Cannot delete other messages' });
+          const createdAt = new Date((db.prepare('SELECT created_at FROM messages WHERE id = ?').get(messageId) as { created_at: string }).created_at).getTime();
+          if (Date.now() - createdAt > 48 * 60 * 60 * 1000) return ack?.({ ok: false, error: 'Delete window expired (48h)' });
           db.prepare('UPDATE messages SET deleted = 1, body = NULL, iv = NULL WHERE id = ?').run(messageId);
           io.to(room(chatId)).emit('message:deleted', { chatId, messageId });
           ack?.({ ok: true });

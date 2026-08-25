@@ -598,4 +598,6 @@ export const api = {
       '/api/contacts/import-phones',
       { method: 'POST', body: JSON.stringify({ phones }) },
     ),
+  // Feature flags
+  getFeatures: () => request<{ calls: boolean; e2eSecretChats: boolean; scheduledMessages: boolean; folders: boolean }>('/api/features'),
 };

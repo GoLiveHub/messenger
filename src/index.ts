@@ -330,6 +330,11 @@ app.get('/api/health', async (_req, res) => {
   res.status(status).json({ ok: dbOk, db: dbOk, redis: redisOk });
 });
 
+// --- Feature flags (public, no auth) ---
+app.get('/api/features', (_req, res) => {
+  res.json(config.features);
+});
+
 // --- Metrics endpoint (admin only) ---
 app.get('/api/metrics', (req, res) => {
   const selfId = (req as any).userId;

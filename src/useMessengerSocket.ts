@@ -270,6 +270,18 @@ export function useMessengerSocket(_token?: string) {
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
+
+  // Track socket connection state
+  useEffect(() => {
+    const onConnected = () => store.set({ socketConnected: true });
+    const onDisconnected = () => store.set({ socketConnected: false });
+    window.addEventListener('messenger:socket-connected', onConnected);
+    window.addEventListener('messenger:socket-disconnected', onDisconnected);
+    return () => {
+      window.removeEventListener('messenger:socket-connected', onConnected);
+      window.removeEventListener('messenger:socket-disconnected', onDisconnected);
+    };
+  }, []);
 }
 
 function bumpChat(chatId: number) {

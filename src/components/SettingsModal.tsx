@@ -86,6 +86,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   useEscapeKey(onClose);
   const trapRef = useFocusTrap(true);
   const me = store.get().me!;
+  const features = store.get().features;
   const [tab, setTab] = useState<Tab>('profile');
 
   return (
@@ -97,7 +98,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
           </button>
           <div className="settings-groups">
             <div className="settings-group">
-              {BASIC.map((item) => (
+              {BASIC.filter((item) => item.id !== 'folders' || features?.folders !== false).map((item) => (
                 <button key={item.id} className={`settings-nav-item${tab === item.id ? ' active' : ''}`} onClick={() => setTab(item.id)}>
                   <span className="settings-item-icon"><item.icon size={20} /></span>
                   {labelOf(item)}
@@ -139,7 +140,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             {tab === 'notifications' && <NotificationsTab me={me} />}
             {tab === 'privacy' && <PrivacyTab me={me} />}
             {tab === 'storage' && <StorageTab />}
-            {tab === 'folders' && <FoldersTab />}
+            {tab === 'folders' && features?.folders !== false && <FoldersTab />}
             {tab === 'bots' && <BotsTab />}
             {tab === 'lang' && <LangTab me={me} />}
             {tab === 'stickers' && <StickersTab />}
