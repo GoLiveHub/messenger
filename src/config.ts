@@ -13,7 +13,7 @@ export const config = {
   databaseUrl: process.env.DATABASE_URL || '',
   redisUrl: process.env.REDIS_URL || '',
   serverSecret,
-  exposeDevCode: !isProduction && process.env.EXPOSE_DEV_CODE !== 'false',
+  exposeDevCode: process.env.EXPOSE_DEV_CODE === 'true',
   smsWebhookUrl: process.env.SMS_WEBHOOK_URL || '',
   smsWebhookToken: process.env.SMS_WEBHOOK_TOKEN || '',
   allowedOrigins: (process.env.ALLOWED_ORIGINS || 'http://127.0.0.1:5173,http://localhost:5173,http://messenger.local:5173')
