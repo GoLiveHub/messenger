@@ -384,7 +384,7 @@ export function ChatList() {
                         <span className="unread-badge">{item.unread}</span>
                       ) : mine && !isGroup ? (
                         <span className={`ticks-out${lastMsgRead ? ' read' : ''}`}>
-                          <CheckCheckIcon size={16} />
+                          {lastMsgRead ? <CheckCheckIcon size={16} /> : <CheckIcon size={16} />}
                         </span>
                       ) : null}
                     </span>

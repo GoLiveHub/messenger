@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { api, type User, type Session } from '../api';
-import { store } from '../store';
+import { store, useApp } from '../store';
 import { Avatar } from './Avatar';
 import { currentTheme, setTheme, type ThemeName } from '../theme';
 import { useFocusTrap, useEscapeKey } from '../hooks';
@@ -85,8 +85,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   useLang();
   useEscapeKey(onClose);
   const trapRef = useFocusTrap(true);
-  const me = store.get().me!;
-  const features = store.get().features;
+  const { me: meRaw, features } = useApp();
+  const me = meRaw!;
   const [tab, setTab] = useState<Tab>('profile');
 
   return (

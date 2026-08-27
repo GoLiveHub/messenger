@@ -10,6 +10,13 @@ function getCtx(): AudioContext | null {
   }
 }
 
+// Web Audio requires a user gesture first — prepare the context on first interaction
+if (typeof window !== 'undefined') {
+  const warmup = () => getCtx();
+  window.addEventListener('pointerdown', warmup, { once: true, passive: true });
+  window.addEventListener('keydown', warmup, { once: true, passive: true });
+}
+
 export function playNotificationSound() {
   const ac = getCtx();
   if (!ac) return;

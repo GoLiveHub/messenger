@@ -461,11 +461,12 @@ export function registerSockets(io: Server) {
           if (hashtagMatches) hashtagsArr = [...new Set(hashtagMatches.map((h) => h.slice(1).toLowerCase()))];
         }
 
+        const nowIso = new Date().toISOString();
         const res = db
           .prepare(
-            'INSERT INTO messages (chat_id, sender_id, client_id, client_timestamp, body, iv, e2e, media_id, reply_to, forwarded_from, expires_at, hashtags, thread_id, topic_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO messages (chat_id, sender_id, client_id, client_timestamp, body, iv, e2e, media_id, reply_to, forwarded_from, expires_at, hashtags, thread_id, topic_id, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           )
-          .run(chatId, selfId, clientId, clientTimestamp, body, iv, chat.kind === 'secret' ? 1 : 0, mediaId, replyTo, forwardFrom ? JSON.stringify(forwardFrom) : null, expiresAt, JSON.stringify(hashtagsArr), threadId, topicId);
+          .run(chatId, selfId, clientId, clientTimestamp, body, iv, chat.kind === 'secret' ? 1 : 0, mediaId, replyTo, forwardFrom ? JSON.stringify(forwardFrom) : null, expiresAt, JSON.stringify(hashtagsArr), threadId, topicId, nowIso);
         const media = mediaId ? getMediaById(mediaId) : null;
         const message = {
           id: Number(res.lastInsertRowid),
@@ -473,7 +474,9 @@ export function registerSockets(io: Server) {
           sender_id: selfId,
           client_id: clientId,
           sender_user: senderUserDTO(selfId),
-          created_at: new Date().toISOString(),
+          created_at: nowIso,
+          delivered_at: nowIso,
+          read_at: null,
           ...deliver,
           expires_at: expiresAt,
           media: media ? serializeMedia(media) : null,

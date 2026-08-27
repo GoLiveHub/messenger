@@ -118,7 +118,7 @@ export function useApp(): AppState {
 export function mergeMessage(m: IncomingMessage & { pending?: boolean }) {
   const existing = state.messages[m.chat_id] ?? [];
   if (!m.pending && existing.some((x) => x.id === m.id)) return;
-  const chatMsgs = [...existing, m];
+  const chatMsgs = [...existing, m].sort((a, b) => a.id - b.id);
   setState({ messages: { ...state.messages, [m.chat_id]: chatMsgs } });
 }
 
@@ -130,7 +130,8 @@ export function replacePending(chatId: number, tempId: number, real: IncomingMes
 }
 
 export function setMessages(chatId: number, msgs: StoredMessage[]) {
-  setState({ messages: { ...state.messages, [chatId]: msgs } });
+  const sorted = [...msgs].sort((a, b) => a.id - b.id);
+  setState({ messages: { ...state.messages, [chatId]: sorted } });
 }
 
 export function updateMessage(

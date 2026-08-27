@@ -3,7 +3,16 @@ import { getCachedMediaBlob, cacheMediaBlobById } from './offlineDb';
 
 // Cached object URLs for server media (fetched with auth header).
 const cache = new Map<number, string>();
-const MAX_CACHED_MEDIA = 100;
+const MAX_CACHED_MEDIA = 500;
+// URLs that must not be evicted while a viewer (lightbox) is open
+const pinnedUrls = new Set<number>();
+
+export function pinMedia(mediaId: number): void {
+  pinnedUrls.add(mediaId);
+}
+export function unpinMedia(mediaId: number): void {
+  pinnedUrls.delete(mediaId);
+}
 
 export async function getMediaUrl(mediaId: number): Promise<string> {
   const hit = cache.get(mediaId);
@@ -25,6 +34,7 @@ export async function getMediaUrl(mediaId: number): Promise<string> {
   while (cache.size > MAX_CACHED_MEDIA) {
     const oldest = cache.keys().next().value as number | undefined;
     if (oldest === undefined) break;
+    if (pinnedUrls.has(oldest)) { break; } // don't evict while pinned
     URL.revokeObjectURL(cache.get(oldest)!);
     cache.delete(oldest);
   }

@@ -203,6 +203,14 @@ export function ChatWindow() {
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [lightbox, setLightbox] = useState<MediaDTO | null>(null);
   const [lightboxFileKey, setLightboxFileKey] = useState<string | undefined>(undefined);
+
+  // Pin media blob URLs so the LRU cache can't evict the blob while the lightbox is open
+  useEffect(() => {
+    if (!lightbox) return;
+    const id = lightbox.id;
+    import('../media').then((m) => m.pinMedia(id));
+    return () => { import('../media').then((m) => m.unpinMedia(id)); };
+  }, [lightbox]);
   const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState('');
   const [showAddMembers, setShowAddMembers] = useState(false);
@@ -452,7 +460,7 @@ export function ChatWindow() {
 
   useEffect(() => {
     if (search.current < 0 || !search.hits.length) return;
-    document.getElementById(`msg-${search.hits[search.current]}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    void jumpToMessage(search.hits[search.current]);
   }, [search.current, search.hits]);
 
   useEffect(() => {
@@ -850,6 +858,15 @@ export function ChatWindow() {
     });
   };
 
+  const onSave = async (m: LayoutMsg) => {
+    if (!activeChatId) return;
+    try {
+      await api.saveMessage(m.id, activeChatId, m.decrypted?.text ?? m.text ?? undefined);
+    } catch (err) {
+      alert((err as Error).message);
+    }
+  };
+
   const onPin = async (m: { id: number }) => {
     if (!activeChatId) return;
     const pins = chat?.chat.pinned_messages ?? (chat?.chat.pinned_id ? [chat.chat.pinned_id] : []);
@@ -889,6 +906,22 @@ export function ChatWindow() {
 
   const scrollToMessage = (id: number) => {
     document.getElementById(`msg-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  const jumpToMessage = async (id: number) => {
+    if (!activeChatId) return;
+    scrollToMessage(id);
+    if (document.getElementById(`msg-${id}`)) return;
+    // Message not loaded — load older pages until it appears
+    for (let i = 0; i < 20; i++) {
+      const list = store.get().messages[activeChatId] ?? [];
+      const oldestId = list[0]?.id;
+      if (oldestId === undefined || oldestId <= 1) break;
+      if (list.some((m) => m.id === id)) { scrollToMessage(id); return; }
+      await loadMessages(activeChatId, oldestId);
+      const after = store.get().messages[activeChatId] ?? [];
+      if (after.some((m) => m.id === id)) { scrollToMessage(id); return; }
+    }
   };
 
   const clearHistory = async () => {
@@ -1428,7 +1461,7 @@ export function ChatWindow() {
               <b>{pinnedMsgs.length === 1 ? t('Pinned message') : tx('Pinned messages', { n: pinnedMsgs.length })}</b>
               <span>{pinnedMsgs.map((pm) => pm.text ?? (pm.media ? mediaLabel(pm.media) : '')).join(' · ')}</span>
             </div>
-            <button className="icon-btn" title={t('Scroll to pinned')} onClick={() => scrollToMessage(pinnedMsgs[0].id)}>
+              <button className="icon-btn" title={t('Scroll to pinned')} onClick={() => pinnedMsgs[0] && void jumpToMessage(pinnedMsgs[0].id)}>
               <ArrowDownIcon size={16} />
             </button>
           </div>
@@ -1459,6 +1492,7 @@ export function ChatWindow() {
               onDelete={onDelete}
               onReply={onReply}
               onForward={onForward}
+              onSave={onSave}
               allowForward={true}
               onReact={onReact}
               onPin={onPin}
@@ -1471,7 +1505,7 @@ export function ChatWindow() {
               submitEdit={submitEdit}
               highlight={search.open ? search.q.trim() : ''}
               searchHit={search.current >= 0 && search.hits[search.current] === item.msg.id}
-              scrollToMessage={scrollToMessage}
+              scrollToMessage={(id: number) => void jumpToMessage(id)}
               onRetry={(m) => {
                 if (!activeChatId) return;
                 resendMessage(activeChatId, m.id, m.text ?? '');
@@ -1700,7 +1734,7 @@ export function ChatWindow() {
               <div style={{ overflow: 'auto', flex: 1, padding: '8px 0' }}>
                 {hashtagSearch.results.length === 0 && <div className="muted" style={{ padding: 16 }}>{t('Nothing found')}</div>}
                 {hashtagSearch.results.map((r) => (
-                  <div key={r.id} className="search-item" style={{ cursor: 'pointer' }} onClick={() => { setHashtagSearch(null); scrollToMessage(r.id); }}>
+                  <div key={r.id} className="search-item" style={{ cursor: 'pointer' }} onClick={() => { setHashtagSearch(null); void jumpToMessage(r.id); }}>
                     <div className="search-item-info" style={{ flex: 1 }}>
                       <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{r.text}</div>
                       <span className="muted" style={{ fontSize: 12 }}>{new Date(r.created_at).toLocaleString()}</span>
@@ -1790,6 +1824,7 @@ function MessageRowInner(props: {
   allowForward: boolean;
   onReact: (m: LayoutMsg, emoji: string) => void;
   onPin: (m: LayoutMsg) => void;
+  onSave: (m: LayoutMsg) => void;
   allowEdit: boolean;
   isPinned: boolean;
   onOpenMedia: (m: MediaDTO, fileKey?: string) => void;
@@ -1819,6 +1854,7 @@ function MessageRowInner(props: {
     onDelete,
     onReply,
     onForward,
+    onSave,
     allowForward,
     onReact,
     onPin,
@@ -1873,6 +1909,13 @@ function MessageRowInner(props: {
   };
 
   useEffect(() => () => clearPressTimer(), []);
+  // Live countdown for expiring messages
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!msg.expires_at) return;
+    const timer = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(timer);
+  }, [msg.expires_at]);
 
   const text = msg.decrypted?.text ?? msg.text ?? '';
   const read = Boolean(msg.read_at);
@@ -1938,7 +1981,7 @@ function MessageRowInner(props: {
                 <button title={t('Reply')} onClick={() => onReply(msg)}><ReplyIcon size={16} /></button>
                 <button title={t('Reply in thread')} onClick={() => { onThreadOpen?.(msg.id); setMenu(null); }}>🧵</button>
                 {allowForward && <button title={t('Forward')} onClick={() => onForward(msg)}><ForwardIcon size={16} /></button>}
-                {allowForward && <button title={t('Save to Saved Messages')} onClick={() => onForward(msg)}><BookmarkIcon size={16} /></button>}
+                {allowForward && <button title={t('Save to Saved Messages')} onClick={() => onSave(msg)}><BookmarkIcon size={16} /></button>}
                 {isPinned ? (
                   <button title={t('Unpin')} className={isPinned ? 'pinned-active' : ''} onClick={() => onPin(msg)}><PinIcon size={16} /></button>
                 ) : (
@@ -2021,7 +2064,7 @@ function MessageRowInner(props: {
         {!editing && (
           <span className="bubble-meta">
             {msg.edited_at && <span className="edited">{t('edited')}</span>}
-            {msg.expires_at && <span className="msg-timer-badge"><ClockIcon size={12} /> {formatExpiry(msg.expires_at)}</span>}
+            {msg.expires_at && formatExpiry(msg.expires_at) && <span className="msg-timer-badge"><ClockIcon size={12} /> {formatExpiry(msg.expires_at)}</span>}
             <span>{time}</span>
             {msg.failed && <AlertIcon size={14} className="status-failed" />}
             {msg.failed && onRetry && (
@@ -2031,8 +2074,8 @@ function MessageRowInner(props: {
               <button className="cancel-btn" title={t('Cancel')} onClick={(e) => { e.stopPropagation(); onCancel(msg); }}>✕</button>
             )}
             {mine && !msg.failed && (
-              <span className={`ticks ${msg.pending ? '' : read ? '' : msg.delivered_at ? '' : 'gray'}`}>
-                {msg.pending ? <ClockIcon size={14} /> : read ? <CheckCheckIcon size={14} /> : msg.delivered_at ? <CheckIcon size={14} /> : <CheckIcon size={14} />}
+              <span className={`ticks${msg.pending ? ' pending' : read ? ' read' : msg.delivered_at ? ' delivered' : ' gray'}`} title={read ? t('Read') : msg.delivered_at ? t('Delivered') : t('Sent')}>
+                {msg.pending ? <ClockIcon size={14} /> : read ? <CheckCheckIcon size={14} /> : msg.delivered_at ? <CheckIcon size={14} /> : <ClockIcon size={14} />}
               </span>
             )}
           </span>
@@ -2079,7 +2122,8 @@ function Lightbox({ media, onClose, fileKey }: { media: MediaDTO; onClose: () =>
     }
     return () => { alive = false; };
   }, [media.id, fileKey]);
-  useEffect(() => { return () => { if (url && url.startsWith('blob:')) URL.revokeObjectURL(url); }; }, [url]);
+  // E2E blobs are fresh — revoke on cleanup. Cached (shared) URLs are managed by media.ts LRU
+  useEffect(() => { return () => { if (url && url.startsWith('blob:') && fileKey) URL.revokeObjectURL(url); }; }, [url, fileKey]);
   return (
     <div className="lightbox" onClick={onClose}>
       <button className="icon-btn lightbox-close" onClick={onClose} title={t('Close')}>
