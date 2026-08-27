@@ -48,7 +48,7 @@ export function useMessengerSocket(_token?: string) {
           const mentionsOnly = notifyLevel === 'mentions';
           const mentionsNone = notifyLevel === 'none';
           const isMention = m.text?.includes(`@${st.me?.username}`) || m.text?.includes(`@${[st.me?.first_name, st.me?.last_name].filter(Boolean).join(' ')}`);
-          const shouldNotify = !mentionsNone && (!mentionsOnly || isMention);
+          const shouldNotify = !m.service && !mentionsNone && (!mentionsOnly || isMention);
           if (shouldNotify && notifications.enabled !== false && notifications.sound !== false && st.activeChatId !== m.chat_id) {
             playNotificationSound();
           }

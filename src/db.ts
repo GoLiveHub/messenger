@@ -664,6 +664,7 @@ db.exec(`
 // --- Admin ---
 try { db.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
 try { db.exec(`ALTER TABLE messages ADD COLUMN delivered_at TEXT`); } catch { /* already exists */ }
+try { db.exec(`ALTER TABLE messages ADD COLUMN service INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
 try { db.exec(`ALTER TABLE messages ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'sent'`); } catch { /* already exists */ }
 try { db.exec(`ALTER TABLE messages ADD COLUMN hashtags TEXT NOT NULL DEFAULT '[]'`); } catch { /* already exists */ }
 try { db.exec(`ALTER TABLE messages ADD COLUMN thread_id INTEGER`); } catch { /* already exists */ }

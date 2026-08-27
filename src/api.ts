@@ -135,6 +135,7 @@ export interface MessageDTO {
   created_at: string;
   read_at: string | null;
   delivered_at: string | null;
+  service?: boolean | number;
   edited_at: string | null;
   text?: string;
   cipher?: string;

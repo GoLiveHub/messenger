@@ -8,7 +8,7 @@ import sharp from 'sharp';
 import { Server } from 'socket.io';
 import { config } from './config.js';
 import { authRouter, deliverCode, logSuspicious, parseCookies, setSessionCookies, clearSessionCookies } from './auth.js';
-import { registerSockets, getChatMessages } from './sockets.js';
+import { registerSockets, getChatMessages, insertServiceMessage } from './sockets.js';
 import { log } from './lib/logger.js';
 import { cacheGet, cacheSet, cacheIncr, cacheExpire, cacheDel } from './lib/redis.js';
 import {
@@ -1416,6 +1416,7 @@ app.post('/api/groups/:id/members', (req, res) => {
   const maxMembers = (chat as any).max_members ?? 200000;
   const currentCount = listChatMembers(chatId).length;
   let added = 0;
+  const addedNames: string[] = [];
   for (const uid of userIds) {
     if (currentCount + added >= maxMembers) break;
     const target = getUserById(uid);
@@ -1424,9 +1425,14 @@ app.post('/api/groups/:id/members', (req, res) => {
     io.in(`user:${uid}`).socketsJoin(roomName(chatId));
     io.to(`user:${uid}`).emit('group:added', groupChatInfo(chatId, uid));
     added++;
+    addedNames.push([target.first_name, target.last_name].filter(Boolean).join(' ') || target.username || 'Someone');
   }
   const info = groupChatInfo(chatId, selfId);
   broadcastGroupInfo(chatId);
+  if (addedNames.length > 0) {
+    const names = addedNames.slice(0, 5).join(', ') + (addedNames.length > 5 ? ` +${addedNames.length - 5}` : '');
+    insertServiceMessage(io, chatId, selfId, `${names} joined the group`);
+  }
   res.json(info);
 });
 
@@ -1444,6 +1450,9 @@ app.delete('/api/groups/:id/members/:userId', (req, res) => {
     io.in(`user:${selfId}`).socketsLeave(roomName(chatId));
     broadcastGroupInfo(chatId);
     io.to(`user:${selfId}`).emit('chat:removed', { chatId });
+    const myRow = getUserById(selfId);
+    const myName = myRow ? [myRow.first_name, myRow.last_name].filter(Boolean).join(' ') || myRow.username || 'Someone' : 'Someone';
+    insertServiceMessage(io, chatId, selfId, `${myName} left the group`);
     return res.json({ ok: true, left: true });
   }
   const role = chatMemberRole(chatId, selfId);
@@ -1455,6 +1464,9 @@ app.delete('/api/groups/:id/members/:userId', (req, res) => {
   removeChatMember(chatId, targetId);
   io.in(`user:${targetId}`).socketsLeave(roomName(chatId));
   io.to(`user:${targetId}`).emit('chat:removed', { chatId });
+  const targetRow = getUserById(targetId);
+  const targetName = targetRow ? [targetRow.first_name, targetRow.last_name].filter(Boolean).join(' ') || targetRow.username || 'Someone' : 'Someone';
+  insertServiceMessage(io, chatId, selfId, `${targetName} was removed from the group`);
   const info = groupChatInfo(chatId, selfId);
   broadcastGroupInfo(chatId);
   res.json(info);
@@ -1494,6 +1506,11 @@ app.patch('/api/groups/:id', (req, res) => {
   );
   const info = groupChatInfo(chatId, selfId);
   broadcastGroupInfo(chatId);
+  if (title !== (chat.title ?? '') && title) {
+    const me = getUserById(selfId);
+    const meName = me ? [me.first_name, me.last_name].filter(Boolean).join(' ') || me.username || 'Someone' : 'Someone';
+    insertServiceMessage(io, chatId, selfId, `${meName} renamed the group to “${title}”`);
+  }
   res.json(info);
 });
 

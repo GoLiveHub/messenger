@@ -1139,6 +1139,7 @@ export function getChatMessages(chatId: number, selfId: number, offset = 0, limi
       created_at: r.created_at,
       read_at: r.read_at,
       delivered_at: (r as any).delivered_at ?? null,
+      service: (r as any).service ?? 0,
       edited_at: r.edited_at,
       expires_at: r.expires_at,
       media: media ? serializeMedia(media) : null,
@@ -1166,4 +1167,48 @@ export function getChatMessages(chatId: number, selfId: number, offset = 0, limi
     }
     return { ...base, text };
   });
+}
+
+// Insert a group/channel service message ("X renamed the group", "Y joined", etc.)
+// and broadcast it via socket. Uses server-side at-rest encryption like normal text.
+export function insertServiceMessage(
+  io: Server,
+  chatId: number,
+  senderId: number,
+  text: string,
+): number | null {
+  try {
+    const nowIso = new Date().toISOString();
+    const enc = encryptAtRest(Buffer.from(text, 'utf8'));
+    const res = db
+      .prepare(
+        "INSERT INTO messages (chat_id, sender_id, body, iv, e2e, created_at, delivered_at, service) VALUES (?, ?, ?, ?, 0, ?, ?, 1)",
+      )
+      .run(chatId, senderId, enc.body, enc.iv, nowIso, nowIso);
+    const id = Number(res.lastInsertRowid);
+    const message = {
+      id,
+      chat_id: chatId,
+      sender_id: senderId,
+      sender_user: senderUserDTO(senderId),
+      created_at: nowIso,
+      delivered_at: nowIso,
+      service: 1,
+      read_at: null,
+      edited_at: null,
+      text,
+      expires_at: null,
+      media: null,
+      reply_to: null,
+      thread_id: null,
+      topic_id: null,
+      hashtags: [],
+      forwarded_from: null,
+      reactions: [],
+    };
+    io.to(room(chatId)).emit('message:new', message);
+    return id;
+  } catch {
+    return null;
+  }
 }

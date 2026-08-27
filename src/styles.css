@@ -1163,6 +1163,26 @@ body.no-effects * {
   white-space: nowrap;
 }
 
+.service-msg {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+
+  width: fit-content;
+  max-width: 100%;
+  margin: 0.375rem auto 0.75rem;
+  padding: 0.1875rem 0.625rem;
+  border-radius: var(--border-radius-messages);
+  font-size: 0.875rem;
+  color: #ffffff;
+  background: var(--action-message-bg);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  text-align: center;
+  user-select: none;
+  cursor: default;
+}
+
 /* --- message rows --- */
 .bubble-row {
   position: relative;

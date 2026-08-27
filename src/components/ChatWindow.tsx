@@ -112,7 +112,7 @@ interface LayoutMsg extends StoredMessage {
   last: boolean;
 }
 
-function computeLayout(msgs: Array<{ sender_id: number; created_at: string }>): Array<{ first: boolean; last: boolean }> {
+function computeLayout(msgs: Array<{ sender_id: number; created_at: string; service?: boolean | number }>): Array<{ first: boolean; last: boolean }> {
   const out: Array<{ first: boolean; last: boolean }> = [];
   for (let i = 0; i < msgs.length; i++) {
     const prev = msgs[i - 1];
@@ -123,8 +123,9 @@ function computeLayout(msgs: Array<{ sender_id: number; created_at: string }>): 
     const nextGap = next
       ? new Date(next.created_at).getTime() - new Date(msgs[i].created_at).getTime()
       : Infinity;
-    const samePrev = prev ? prev.sender_id === msgs[i].sender_id && prevGap < GROUP_GAP_MS : false;
-    const sameNext = next ? next.sender_id === msgs[i].sender_id && nextGap < GROUP_GAP_MS : false;
+    const serviceGap = !!msgs[i].service;
+    const samePrev = prev ? prev.sender_id === msgs[i].sender_id && prevGap < GROUP_GAP_MS && !serviceGap && !prev.service : false;
+    const sameNext = next ? next.sender_id === msgs[i].sender_id && nextGap < GROUP_GAP_MS && !next.service : false;
     out.push({ first: !samePrev, last: !sameNext });
   }
   return out;
@@ -1469,6 +1470,8 @@ export function ChatWindow() {
         {withDays.map((item, i) =>
           item.type === 'day' ? (
             <div key={`d${i}`} className="day-sep">{item.label}</div>
+          ) : item.msg.service ? (
+            <div key={`svc${item.msg.id}`} className="service-msg">{item.msg.text ?? ''}</div>
           ) : (
             <MessageRow
               key={item.msg.id}
