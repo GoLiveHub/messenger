@@ -124,9 +124,9 @@ export function mergeMessage(m: IncomingMessage & { pending?: boolean }) {
 }
 
 export function replacePending(chatId: number, tempId: number, real: IncomingMessage) {
-  const chatMsgs = (state.messages[chatId] ?? []).map((m) =>
-    m.pending && m.id === tempId ? { ...real } : m,
-  );
+  const chatMsgs = (state.messages[chatId] ?? [])
+    .map((m) => (m.pending && m.id === tempId ? { ...real } : m))
+    .sort((a, b) => a.id - b.id);
   setState({ messages: { ...state.messages, [chatId]: chatMsgs } });
 }
 

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useApp, store, setMessages, mergeMessage, resendMessage, cancelMessage, type StoredMessage } from '../store';
+import { useApp, store, setMessages, mergeMessage, replacePending, resendMessage, cancelMessage, type StoredMessage } from '../store';
 import { api, type MediaDTO, type User, type Topic } from '../api';
 import { sendMessage, sendTyping, joinChat, sendRead, editMessage, deleteMessage, sendReact, pinMessage } from '../socket';
 import { getE2EKeys } from '../crypto/ensureKeys';
@@ -237,6 +237,17 @@ export function ChatWindow() {
   const typingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const readSentFor = useRef<Set<number>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const autosize = (el: HTMLTextAreaElement) => {
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  };
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft, editText, editingId]);
   const [rec, setRec] = useState<{ state: 'idle' | 'recording' | 'stopped'; seconds: number; blob?: Blob; duration?: number }>({
     state: 'idle',
     seconds: 0,
@@ -582,53 +593,70 @@ export function ChatWindow() {
       return;
     }
     const text = draft.trim();
-    const clientId = crypto.randomUUID();
     setDraft('');
     try { localStorage.removeItem(`draft_${activeChatId}`); } catch { /* ignore */ }
     setReplyTo(null);
     sendTyping(activeChatId, false);
 
     const tempId = -Date.now();
-    const urlMatch = text.match(/https?:\/\/[^\s]+/);
-    const preview = urlMatch ? linkPreviews[urlMatch[0]] : undefined;
-    mergeMessage({ id: tempId, chat_id: activeChatId, sender_id: me!.id, client_id: clientId, created_at: new Date().toISOString(), text, pending: true, link_preview: preview });
-
-    try {
-      const real = await doSend({ text, replyTo: replyTo?.id, clientId });
-      if (!real) return;
-      const list = store.get().messages[activeChatId] ?? [];
-      store.set({
-        messages: {
-          ...store.get().messages,
-          [activeChatId]: list.map((m) => (m.id === tempId ? real : m)),
-        },
-      });
-      if (isSecret) {
-        // Sender-side: try to decrypt via recvKey (may fail until peer replies, which advances the ratchet)
-        const session = secretKeys.get(secretKeyId(me!.id, activeChatId))!;
-        try {
-          const dec = await decryptSecret(session.recvKey, real.cipher!, real.iv!);
-          let fileKey: string | undefined;
-          try {
-            const parsed = JSON.parse(dec);
-            if (parsed?.e2e_file && parsed.cipher && parsed.iv) {
-              const fileKeyB64 = await decryptSecret(session.recvKey, parsed.cipher, parsed.iv);
-              fileKey = fileKeyB64;
-            }
-          } catch { /* not e2e_file */ }
-          setHistory((h) => ({ ...h, [activeChatId]: { ...(h[activeChatId] ?? {}), [real.id]: { text: fileKey ? '' : dec, fileKey } } }));
-        } catch {
-          // Sender can't decrypt own message yet — will show when peer replies
-        }
+    const splitText = (s: string): string[] => {
+      if (s.length <= 1000) return [s];
+      const out: string[] = [];
+      let rest = s;
+      while (rest.length > 1000) {
+        const at = rest.lastIndexOf(' ', 1000);
+        const idx = at > 0 ? at : 1000;
+        out.push(rest.slice(0, idx));
+        rest = rest.slice(idx).trimStart();
       }
-    } catch (err) {
-      const list = store.get().messages[activeChatId] ?? [];
+      if (rest) out.push(rest);
+      return out;
+    };
+
+    const failPending = (chatId: number, tid: number) => {
+      const list = store.get().messages[chatId] ?? [];
       store.set({
         messages: {
           ...store.get().messages,
-          [activeChatId]: list.map((m) => (m.id === tempId ? { ...m, failed: true, pending: false } : m)),
+          [chatId]: list.map((m) => (m.id === tid ? { ...m, failed: true, pending: false } : m)),
         },
       });
+    };
+
+    const sendChunk = async (cText: string, cClientId: string, cTempId: number, withReply: boolean) => {
+      const urlMatch = cText.match(/https?:\/\/[^\s]+/);
+      const preview = urlMatch ? linkPreviews[urlMatch[0]] : undefined;
+      mergeMessage({ id: cTempId, chat_id: activeChatId, sender_id: me!.id, client_id: cClientId, created_at: new Date().toISOString(), text: cText, pending: true, link_preview: preview });
+      try {
+        const real = await doSend({ text: cText, replyTo: withReply ? replyTo?.id : undefined, clientId: cClientId });
+        if (!real) return;
+        replacePending(activeChatId, cTempId, real);
+        if (isSecret) {
+          // Sender-side: try to decrypt via recvKey (may fail until peer replies, which advances the ratchet)
+          const session = secretKeys.get(secretKeyId(me!.id, activeChatId))!;
+          try {
+            const dec = await decryptSecret(session.recvKey, real.cipher!, real.iv!);
+            let fileKey: string | undefined;
+            try {
+              const parsed = JSON.parse(dec);
+              if (parsed?.e2e_file && parsed.cipher && parsed.iv) {
+                const fileKeyB64 = await decryptSecret(session.recvKey, parsed.cipher, parsed.iv);
+                fileKey = fileKeyB64;
+              }
+            } catch { /* not e2e_file */ }
+            setHistory((h) => ({ ...h, [activeChatId]: { ...(h[activeChatId] ?? {}), [real.id]: { text: fileKey ? '' : dec, fileKey } } }));
+          } catch {
+            // Sender can't decrypt own message yet — will show when peer replies
+          }
+        }
+      } catch {
+        failPending(activeChatId, cTempId);
+      }
+    };
+
+    const chunks = splitText(text);
+    for (let i = 0; i < chunks.length; i++) {
+      await sendChunk(chunks[i], crypto.randomUUID(), tempId - i, i === 0);
     }
   };
 
@@ -1636,7 +1664,7 @@ export function ChatWindow() {
             </button>
           </div>
         )}
-        <form className="composer" onSubmit={handleSend}>
+        <form className="composer" onSubmit={editingId !== null ? submitEdit : handleSend}>
           <input
             type="file"
             ref={fileRef}
@@ -1653,12 +1681,21 @@ export function ChatWindow() {
           <button type="button" className="composer-attach" onClick={() => fileRef.current?.click()} title={t('Attach')}>
             <PaperclipIcon size={22} />
           </button>
-          <input
+          <textarea
+            ref={composerRef}
+            rows={1}
             placeholder={editingId !== null ? t('Edit message…') : t('Write a message…')}
             value={editingId !== null ? editText : draft}
-            onChange={(e) => (editingId !== null ? setEditText(e.target.value) : onTyping(e.target.value))}
+            onChange={(e) => {
+              autosize(e.currentTarget);
+              if (editingId !== null) setEditText(e.target.value);
+              else onTyping(e.target.value);
+            }}
             onKeyDown={(e) => {
-              if (e.key === 'Escape') {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                e.currentTarget.form?.requestSubmit();
+              } else if (e.key === 'Escape') {
                 setEditingId(null);
                 setEditText('');
               }

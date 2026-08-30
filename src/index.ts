@@ -2291,7 +2291,7 @@ app.post('/api/media', upload.single('file'), async (req, res) => {
   if (kind === 'photo' && !req.file.mimetype.startsWith('image/')) {
     return res.status(400).json({ error: 'Photo uploads must use an image content type' });
   }
-  if (kind === 'audio' && !req.file.mimetype.startsWith('audio/')) {
+  if (kind === 'audio' && !req.file.mimetype.startsWith('audio/') && req.file.mimetype !== 'application/octet-stream') {
     return res.status(400).json({ error: 'Voice uploads must use an audio content type' });
   }
   if (kind === 'audio') {
