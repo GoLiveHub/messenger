@@ -1240,16 +1240,17 @@ app.delete('/api/e2e/devices/:id', (req, res) => {
 });
 
 app.get('/api/users/search', (req, res) => {
-  const q = String(req.query.q ?? '').trim();
+  const q = String(req.query.q ?? '').trim().replace(/^@/, '');
   const selfId = (req as any).userId;
   if (!q) return res.json([]);
   const safeQuery = q.replace(/[%_]/g, '');
   if (!safeQuery) return res.json([]);
+  const phoneDigits = safeQuery.replace(/\D/g, '');
   const rows = db
     .prepare(
-      "SELECT * FROM users WHERE (username LIKE ? OR first_name LIKE ? OR last_name LIKE ?) AND id != ? LIMIT 10",
+      "SELECT * FROM users WHERE (LOWER(username) LIKE LOWER(?) OR LOWER(first_name) LIKE LOWER(?) OR LOWER(last_name) LIKE LOWER(?) OR (LENGTH(?) > 6 AND REPLACE(phone, '+', '') LIKE ?)) AND id != ? LIMIT 20",
     )
-    .all(`%${safeQuery}%`, `%${safeQuery}%`, `%${safeQuery}%`, selfId) as any[];
+    .all(`%${safeQuery}%`, `%${safeQuery}%`, `%${safeQuery}%`, phoneDigits, `%${phoneDigits}%`, selfId) as any[];
   // Apply find_me privacy: filter out users who don't want to be found
   const filtered = rows.filter((u) => privacyAllows(u, selfId, 'find_me'));
   res.json(filtered.map((u) => publicUserFor(u, selfId)));
