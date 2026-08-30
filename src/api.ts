@@ -463,6 +463,8 @@ export const api = {
   getMyStickerPacks: () => request<Array<{ id: number; name: string; emoji: string | null }>>('/api/me/sticker-packs'),
   searchGifs: (q: string, limit = 20) =>
     request<Array<{ id: string; url: string; preview: string; width: number; height: number }>>(`/api/gifs/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  attachGif: (chatId: number, url: string) =>
+    request<{ media: MediaDTO }>('/api/gifs/attach', { method: 'POST', body: JSON.stringify({ chatId, url }) }),
   // Custom reactions (REST fallback to the socket path)
   addReaction: (messageId: number, emoji: string) =>
     request<{ ok: boolean; reactions: ReactionGroup[] }>(`/api/messages/${messageId}/reactions`, {

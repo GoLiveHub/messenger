@@ -149,6 +149,8 @@ const ru: Record<string, string> = {
   'Search in chat': 'Поиск в чате',
   'More': 'Ещё',
   'Clear history': 'Очистить историю',
+  'Clear this chat history?': 'Очистить историю этого чата?',
+  'This will delete all messages in this chat. Are you sure?': 'Все сообщения в этом чате будут удалены. Вы уверены?',
   'Delete chat': 'Удалить чат',
   'Unblock': 'Разблокировать',
   'Block': 'Заблокировать',

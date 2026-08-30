@@ -1491,7 +1491,7 @@ body.no-effects * {
   margin: -0.1875rem -0.5625rem 0;
   border-radius: var(--border-radius-messages);
   overflow: hidden;
-  background: #000;
+  background: var(--color-item-hover);
 }
 
 .bubble-media:only-child {
@@ -1509,7 +1509,7 @@ body.no-effects * {
   padding-bottom: 0;
 }
 
-.bubble:has(.bubble-media):not(:has(.bubble-text)) .bubble-meta {
+.bubble:has(.bubble-media):not(:has(.bubble-text)):not(:has(.voice)) .bubble-meta {
   margin-top: -1.25rem;
   margin-bottom: 0.25rem;
   color: #ffffff;
@@ -1723,6 +1723,39 @@ body.no-effects * {
 /* ============================================================
    Composer (floating pill)
    ============================================================ */
+
+.media-confirm-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  width: calc(100% - var(--middle-panel-inline-padding) * 2);
+  max-width: calc(var(--messages-container-width) - var(--middle-panel-inline-padding) * 2);
+  margin: 0 auto var(--composer-row-gap);
+  padding: 0.5rem 0.75rem;
+  border-radius: 1rem;
+  background: var(--color-background);
+  box-shadow: var(--shadow-footer);
+  z-index: 4;
+}
+
+.media-confirm-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 0.5rem;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.media-confirm-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
 
 .composer {
   display: flex;
@@ -2265,6 +2298,18 @@ body.no-effects * {
   gap: 0.25rem;
 }
 
+.info-media-audios {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.375rem;
+}
+
+.info-media-audios .voice {
+  min-width: 0;
+  width: 100%;
+}
+
 .info-media-thumb {
   aspect-ratio: 1;
   width: 100%;
@@ -2695,6 +2740,12 @@ body.no-effects * {
   color: #ffffff;
   background: var(--color-primary);
   border: 2px solid var(--color-background);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.avatar-camera:hover {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 0.35rem color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 
 .profile-edit-btn {

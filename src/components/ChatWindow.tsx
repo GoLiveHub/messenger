@@ -247,6 +247,7 @@ export function ChatWindow() {
   const recSwipeRef = useRef<{ startX: number; currentX: number } | null>(null);
   const [recSwipeX, setRecSwipeX] = useState(0);
   const SWIPE_CANCEL_THRESHOLD = 120;
+  const [pendingMedia, setPendingMedia] = useState<{ file: File; preview: string; kind: 'photo' | 'file' } | null>(null);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [linkPreviews, setLinkPreviews] = useState<Record<string, { url: string; title: string | null; description: string | null; image: string | null }>>({});
   const [scheduleOpen, setScheduleOpen] = useState(false);
@@ -631,12 +632,12 @@ export function ChatWindow() {
     }
   };
 
-  const sendMedia = async (file: File, kind: 'photo' | 'file') => {
+  const sendMedia = async (file: File, kind: 'photo' | 'file' | 'audio') => {
     if (!activeChatId) return;
     const abortCtrl = new AbortController();
     uploadAbortRef.current = abortCtrl;
     setUploadProgress(0);
-    setUploadingFile(kind === 'photo' ? t('Sending photo…') : t('Sending file…'));
+    setUploadingFile(kind === 'photo' ? t('Sending photo…') : kind === 'audio' ? t('Sending voice…') : t('Sending file…'));
     try {
       let uploadFile: File | Blob = file;
       if (kind === 'photo' && file.type.startsWith('image/')) {
@@ -704,10 +705,32 @@ export function ChatWindow() {
 
   const onFiles = (files: FileList | null) => {
     if (!files) return;
-    Array.from(files).forEach((f) => {
-      const kind: 'photo' | 'file' = f.type.startsWith('image/') ? 'photo' : 'file';
+    const arr = Array.from(files);
+    arr.forEach((f) => {
+      const kind: 'photo' | 'file' | 'audio' = f.type.startsWith('image/')
+        ? 'photo'
+        : f.type.startsWith('audio/')
+          ? 'audio'
+          : 'file';
+      if (kind === 'photo') {
+        setPendingMedia({ file: f, preview: URL.createObjectURL(f), kind });
+        return;
+      }
       void sendMedia(f, kind);
     });
+  };
+
+  const confirmPendingMedia = () => {
+    if (!pendingMedia) return;
+    const it = pendingMedia;
+    setPendingMedia(null);
+    void sendMedia(it.file, it.kind);
+  };
+
+  const cancelPendingMedia = () => {
+    if (!pendingMedia) return;
+    URL.revokeObjectURL(pendingMedia.preview);
+    setPendingMedia(null);
   };
 
   const cancelUpload = () => {
@@ -927,14 +950,15 @@ export function ChatWindow() {
 
   const clearHistory = async () => {
     if (!activeChatId) return;
+    setMoreOpen(false);
+    if (!confirm(t('Clear this chat history?'))) return;
+    if (!confirm(t('This will delete all messages in this chat. Are you sure?'))) return;
     try {
       await api.clearHistory(activeChatId);
       setMessages(activeChatId, []);
       setHistory((h) => ({ ...h, [activeChatId]: {} }));
     } catch (err) {
       alert((err as Error).message);
-    } finally {
-      setMoreOpen(false);
     }
   };
 
@@ -1384,6 +1408,9 @@ export function ChatWindow() {
         role="log"
         aria-live="polite"
         aria-label={t('Messages')}
+        onClick={() => {
+          if (store.get().infoOpen) store.set({ infoOpen: false });
+        }}
         onDragOver={(e) => {
           e.preventDefault();
           e.dataTransfer.dropEffect = 'copy';
@@ -1595,6 +1622,20 @@ export function ChatWindow() {
               onClose={() => setMentionQuery(null)}
             />
           )}
+        {pendingMedia && (
+          <div className="media-confirm-bar">
+            {pendingMedia.preview.startsWith('data:') || pendingMedia.kind === 'photo' ? (
+              <img className="media-confirm-thumb" src={pendingMedia.preview} alt="" />
+            ) : null}
+            <span className="media-confirm-name">{pendingMedia.file.name}</span>
+            <button type="button" className="btn primary" onClick={confirmPendingMedia} title={t('Send photo')}>
+              <SendIcon />
+            </button>
+            <button type="button" className="icon-btn danger-text" onClick={cancelPendingMedia} title={t('Cancel')}>
+              <CloseIcon size={18} />
+            </button>
+          </div>
+        )}
         <form className="composer" onSubmit={handleSend}>
           <input
             type="file"
@@ -1683,7 +1724,16 @@ export function ChatWindow() {
       {emojiOpen && (
         <>
           <div className="overlay-catch" onClick={() => setEmojiOpen(false)} />
-          <EmojiPicker onPick={insertEmoji} onStickerPick={(sticker) => { setEmojiOpen(false); doSend({ text: sticker.emoji, mediaId: sticker.file_id }); }} onGifPick={(gif) => { setEmojiOpen(false); setDraft((prev) => (prev ? prev + ' ' : '') + gif.url); }} />
+          <EmojiPicker onPick={insertEmoji} onStickerPick={(sticker) => { setEmojiOpen(false); doSend({ text: sticker.emoji, mediaId: sticker.file_id }); }} onGifPick={async (gif) => {
+            setEmojiOpen(false);
+            try {
+              if (!activeChatId) return;
+              const { media } = await api.attachGif(activeChatId, gif.url);
+              await doSend({ mediaId: media.id });
+            } catch (err) {
+              alert((err as Error).message);
+            }
+          }} />
         </>
       )}
 

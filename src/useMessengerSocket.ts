@@ -3,6 +3,7 @@ import { connectSocket, type ChatEvents } from './socket';
 import {
   store,
   mergeMessage,
+  replacePending,
   updateMessage,
   removeMessage,
   markChatRead,
@@ -14,6 +15,16 @@ import {
 import { playNotificationSound } from './sound';
 
 const BASE_TITLE = document.title;
+
+// Chats opened right after their creation should not trigger a "New message"
+// notification/toast (the chat is already open in front of the user).
+const chatAutoOpened = new Map<number, number>();
+const AUTO_OPEN_QUIET_MS = 4000;
+
+export function markChatAutoOpened(chatId: number) {
+  chatAutoOpened.set(chatId, Date.now());
+  setTimeout(() => chatAutoOpened.delete(chatId), AUTO_OPEN_QUIET_MS + 500);
+}
 
 export function resetTitle() {
   document.title = BASE_TITLE;
@@ -32,12 +43,15 @@ export function useMessengerSocket(_token?: string) {
           (x) => x.pending && m.client_id && x.client_id === m.client_id,
         );
         if (existing && existing.sender_id === m.sender_id) {
-          updateMessage(m.chat_id, existing.id, m);
+          // Echo of our own optimistic message: replace wholesale so the
+          // message adopts the real id / delivered_at and pending is cleared.
+          replacePending(m.chat_id, existing.id, m);
         } else {
           mergeMessage(m);
         }
         const mine = m.sender_id === st.me?.id;
         const active = st.activeChatId === m.chat_id;
+        const justCreated = chatAutoOpened.has(m.chat_id);
         if (!st.chats.some((chat) => chat.chat.id === m.chat_id)) {
           void import('./api').then(({ api }) => api.getChats()).then((chats) => store.set({ chats })).catch(() => {});
         }
@@ -49,7 +63,7 @@ export function useMessengerSocket(_token?: string) {
           const mentionsNone = notifyLevel === 'none';
           const isMention = m.text?.includes(`@${st.me?.username}`) || m.text?.includes(`@${[st.me?.first_name, st.me?.last_name].filter(Boolean).join(' ')}`);
           const shouldNotify = !m.service && !mentionsNone && (!mentionsOnly || isMention);
-          if (shouldNotify && notifications.enabled !== false && notifications.sound !== false && st.activeChatId !== m.chat_id) {
+          if (shouldNotify && notifications.enabled !== false && notifications.sound !== false && st.activeChatId !== m.chat_id && !justCreated) {
             playNotificationSound();
           }
           // flash title when tab hidden
@@ -57,7 +71,7 @@ export function useMessengerSocket(_token?: string) {
             document.title = `(1) ${BASE_TITLE}`;
           }
           // browser Notification when tab hidden or viewing another chat
-          if (shouldNotify && notifications.enabled !== false && (document.hidden || st.activeChatId !== m.chat_id)) {
+          if (shouldNotify && notifications.enabled !== false && !justCreated && (document.hidden || st.activeChatId !== m.chat_id)) {
             const senderName = m.sender_user
               ? [m.sender_user.first_name, m.sender_user.last_name].filter(Boolean).join(' ') || 'Unknown'
               : 'Unknown';

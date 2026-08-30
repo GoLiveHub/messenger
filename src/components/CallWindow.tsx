@@ -16,6 +16,7 @@ import {
 } from './icons';
 import { formatCallDuration } from '../utils';
 import { t } from '../i18n';
+import { startCallTone } from '../sound';
 
 const TURN_URL = (import.meta as any).env?.VITE_TURN_URL ?? '';
 const TURN_USERNAME = (import.meta as any).env?.VITE_TURN_USERNAME ?? '';
@@ -53,6 +54,18 @@ export function CallWindow() {
   const callType = activeCall?.callType ?? 'audio';
   const callerName = activeCall?.callerName ?? '';
   const status = activeCall?.status ?? 'ended';
+  const toneRef = useRef<(() => void) | null>(null);
+
+  // Play ringing/dial tone while the call is ringing or connecting
+  useEffect(() => {
+    const shouldRing = status === 'ringing' || status === 'connecting';
+    if (shouldRing && !toneRef.current) {
+      toneRef.current = startCallTone(isIncoming ? 'incoming' : 'outgoing');
+    } else if (!shouldRing && toneRef.current) {
+      toneRef.current();
+      toneRef.current = null;
+    }
+  }, [status, isIncoming]);
 
   // Find peer from chat
   const chat = activeCall
@@ -65,6 +78,8 @@ export function CallWindow() {
       clearInterval(timerRef.current);
       timerRef.current = undefined;
     }
+    toneRef.current?.();
+    toneRef.current = null;
     if (screenStreamRef.current) {
       screenStreamRef.current.getTracks().forEach((tr) => tr.stop());
       screenStreamRef.current = null;

@@ -2662,8 +2662,71 @@ app.get('/api/gifs/search', async (req, res) => {
   res.json(filtered.slice(0, limit));
 });
 
+// Attach a remote GIF: server downloads it (whitelisted CDN hosts only),
+// stores it as a message media so it renders/anims instead of a text link.
+app.post('/api/gifs/attach', async (req, res) => {
+  const selfId = (req as any).userId;
+  const chatId = Number(req.body?.chatId);
+  const url = String(req.body?.url ?? '').trim();
+  if (!/^https:\/\//.test(url)) return res.status(400).json({ error: 'Invalid GIF url' });
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return res.status(400).json({ error: 'Invalid GIF url' });
+  }
+  const allowedHosts = [
+    'tenor.com', 'media.tenor.com', 'c.tenor.com',
+    'giphy.com', 'media.giphy.com', 'i.giphy.com', 'media.giphy.media',
+  ];
+  if (!allowedHosts.some((h) => host === h || host.endsWith('.' + h))) {
+    return res.status(400).json({ error: 'GIF host is not allowed' });
+  }
+  const chat = getChatForUser(chatId, selfId);
+  if (!chat) return res.status(404).json({ error: 'Chat not found' });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12_000);
+  let resp: Response;
+  try {
+    resp = await fetch(url, { redirect: 'follow', signal: ctrl.signal, headers: { 'user-agent': 'Mozilla/5.0 MessengerGIF' } });
+  } catch {
+    return res.status(502).json({ error: 'Failed to fetch GIF' });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!resp.ok) return res.status(502).json({ error: 'GIF fetch failed' });
+  const mime = resp.headers.get('content-type')?.split(';')[0]?.trim() ?? '';
+  if (!mime.startsWith('image/')) return res.status(400).json({ error: 'Not an image' });
+  const buf = Buffer.from(await resp.arrayBuffer());
+  if (buf.length === 0 || buf.length > 8_000_000) return res.status(400).json({ error: 'GIF is too large' });
+  const enc = encryptAtRest(buf);
+  const dims = extractImageDimensions(buf);
+  let storageKey: string | null = null;
+  try {
+    const key = `media/${selfId}/${Date.now()}_gif_${Math.random().toString(36).slice(2, 8)}`;
+    await uploadFile(key, enc.body, mime);
+    storageKey = key;
+  } catch { /* Object Storage unavailable, fall back to DB blob */ }
+  const media = insertMedia({
+    chatId,
+    senderId: selfId,
+    kind: 'photo',
+    name: `GIF ${host}`,
+    mime,
+    size: buf.length,
+    body: enc.body,
+    iv: enc.iv,
+    duration: null,
+    width: dims?.width ?? null,
+    height: dims?.height ?? null,
+    storage_key: storageKey,
+    thumbnail: null,
+  } as any);
+  res.json({ media: serializeMedia(media) });
+});
+
 function getCuratedGifs(limit: number) {
-  // Curated popular GIFs (placeholder URLs - in production would use a CDN)
+  // Curated popular GIFs (fallback when the GIF search provider is unreachable)
   return [
     { id: 'g1', url: 'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif', preview: 'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif', width: 498, height: 280, tags: ['thumbs up', 'agree'] },
     { id: 'g2', url: 'https://media.giphy.com/media/l0HlNQ03J5JR3V2sE/giphy.gif', preview: 'https://media.giphy.com/media/l0HlNQ03J5JR3V2sE/giphy.gif', width: 498, height: 373, tags: ['heart', 'love'] },

@@ -5,6 +5,7 @@ import { initCall } from '../socket';
 import { Avatar } from './Avatar';
 import { MediaImage } from './MediaImage';
 import { MediaGallery } from './MediaGallery';
+import { VoicePlayer } from './VoicePlayer';
 import { AddMembersModal } from './AddMembersModal';
 import { EditGroupModal } from './EditGroupModal';
 import {
@@ -15,8 +16,6 @@ import {
   ArchiveIcon,
   PhoneIcon,
   VideoIcon,
-  FileIcon,
-  MicIcon,
   CrownIcon,
   ExitIcon,
   PersonPlusIcon,
@@ -25,7 +24,6 @@ import {
   ShieldIcon,
 } from './icons';
 import { t, tx, useLang } from '../i18n';
-import { formatBytes } from '../media';
 import { safetyNumber } from '../crypto/e2e';
 import { ensureE2EKeys } from '../crypto/ensureKeys';
 
@@ -380,16 +378,18 @@ export function ChatInfoPanel() {
         ) : (
           <>
             <div className="info-media-grid">
-              {media.map((m) =>
-                m.kind === 'photo' ? (
-                  <MediaImage key={m.id} media={m} className="info-media-thumb" />
-                ) : (
-                  <div key={m.id} className="info-media-file">
-                    <span>{m.kind === 'audio' ? <MicIcon size={16} /> : <FileIcon size={16} />}</span>
-                    <i>{formatBytes(m.size)}</i>
-                  </div>
-                ),
-              )}
+              {media
+                .filter((m) => m.kind === 'photo')
+                .map((m) => (
+                  <MediaImage key={m.id} media={m} className="info-media-thumb" onClick={() => setGalleryOpen(true)} />
+                ))}
+            </div>
+            <div className="info-media-audios">
+              {media
+                .filter((m) => m.kind === 'audio')
+                .map((m) => (
+                  <VoicePlayer key={m.id} media={m} />
+                ))}
             </div>
             {media.length >= 5 && (
               <button className="mini" onClick={() => setGalleryOpen(true)}>{t('View all')}</button>

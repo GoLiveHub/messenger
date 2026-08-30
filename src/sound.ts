@@ -35,3 +35,46 @@ export function playNotificationSound() {
     osc.stop(now + i * 0.06 + 0.3);
   }
 }
+
+// In-call ringing/dial tones (generated via Web Audio, no assets needed).
+// Returns a stop() function; safe to call even if the tone already stopped.
+export function startCallTone(kind: 'outgoing' | 'incoming'): () => void {
+  const ac = getCtx();
+  if (!ac) return () => {};
+  let stopped = false;
+
+  const beep = (freq: number, at: number, dur: number, peak: number) => {
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, at);
+    gain.gain.setValueAtTime(0.001, at);
+    gain.gain.exponentialRampToValueAtTime(peak, at + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, at + dur);
+    osc.connect(gain).connect(ac.destination);
+    osc.start(at);
+    osc.stop(at + dur + 0.05);
+  };
+
+  const playPattern = () => {
+    if (stopped) return;
+    const now = ac.currentTime;
+    if (kind === 'incoming') {
+      // classic double ring: ring-ring, pause
+      beep(440, now, 0.18, 0.16);
+      beep(440, now + 0.32, 0.32, 0.16);
+    } else {
+      // outgoing: two short beeps
+      beep(520, now, 0.16, 0.1);
+      beep(520, now + 0.24, 0.24, 0.1);
+    }
+  };
+
+  playPattern();
+  const timer = setInterval(() => playPattern(), kind === 'incoming' ? 3200 : 3600);
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}

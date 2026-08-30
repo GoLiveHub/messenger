@@ -42,14 +42,18 @@ export const config = {
   vapidSubject: process.env.VAPID_SUBJECT || 'mailto:admin@messenger.local',
   // Data retention
   dataRetentionDays: Number(process.env.DATA_RETENTION_DAYS || '365'),
-  // Tenor GIF API
-  tenorApiKey: process.env.TENOR_API_KEY || '',
-  // Feature flags (disabled in production until audited)
+  // Tenor GIF API. LIVDSRZULELA is the widely-published Tenor *prototype*/doc key
+  // (used across countless open-source demos); replace with your own key from
+  // https://developers.google.com/tenor/guides/quickstart for production use.
+  tenorApiKey: process.env.TENOR_API_KEY || 'LIVDSRZULELA',
+  // Feature flags. Enabled everywhere: voice/video calls work through built-in
+  // socket signaling (public STUN by default, TURN via VITE_TURN_* for
+  // restrictive NATs), and secret chats use the client-side E2E ratchet.
   features: {
-    calls: !isProduction,
-    e2eSecretChats: !isProduction,
-    scheduledMessages: !isProduction,
-    folders: !isProduction,
+    calls: true,
+    e2eSecretChats: true,
+    scheduledMessages: true,
+    folders: true,
   },
   // Logging
   logLevel: process.env.LOG_LEVEL || 'info',

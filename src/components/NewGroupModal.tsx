@@ -6,6 +6,7 @@ import { CloseIcon, SearchIcon, CheckIcon, MegaphoneIcon, UsersIcon, ImageIcon }
 import { t, tx, useLang } from '../i18n';
 import { loadImage, resizeToDataUrl } from '../lib/image';
 import { useFocusTrap, useEscapeKey } from '../hooks';
+import { markChatAutoOpened } from '../useMessengerSocket';
 
 export function NewGroupModal({ kind, onClose }: { kind: 'group' | 'channel'; onClose: () => void }) {
   useLang();
@@ -86,6 +87,7 @@ export function NewGroupModal({ kind, onClose }: { kind: 'group' | 'channel'; on
         photo: photo ?? undefined,
         userIds: [...selected],
       });
+      markChatAutoOpened(info.chat.chat.id);
       store.set({ chats: await api.getChats(), activeChatId: info.chat.chat.id });
       onClose();
     } catch (err) {
