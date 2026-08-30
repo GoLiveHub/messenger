@@ -5,6 +5,8 @@ export type LangCode = 'en' | 'ru';
 const ru: Record<string, string> = {
   // Auth
   'Sign in to Messenger': 'Вход в Messenger',
+  'Captcha could not be loaded. Try again.': 'Не удалось загрузить капчу. Попробуйте ещё раз.',
+  'Incorrect answer. Try again.': 'Неверный ответ. Попробуйте ещё раз.',
   'digits_count': '{n}/{m} цифр',
   'Checking phone…': 'Проверяем номер…',
   'This number is already registered. You can sign in.': 'Этот номер уже зарегистрирован. Вы можете войти.',
@@ -523,6 +525,8 @@ const en: Record<string, string> = {
   'digits_count': '{n}/{m} digits',
   'need_digits': 'Need {min}-{max} digits',
   'no_account_yet': "No account for {phone} yet — we'll create one.",
+  'Captcha could not be loaded. Try again.': 'Captcha could not be loaded. Try again.',
+  'Incorrect answer. Try again.': 'Incorrect answer. Try again.',
   'today_suffix': ' — today!',
   'chats_loaded': 'Loaded chats: {n}',
   'member_count': '{n} members',

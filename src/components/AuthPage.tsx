@@ -53,12 +53,20 @@ export function AuthPage() {
   const fetchCaptcha = async () => {
     try {
       const res = await fetch('/api/auth/captcha/challenge', { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ? String(data.error) : t('Captcha could not be loaded. Try again.'));
+        return;
+      }
       const data = await res.json();
       setCaptchaToken(data.token);
       setCaptchaQuestion(data.question);
       setShowCaptcha(true);
       setCaptchaAnswer('');
-    } catch { /* ignore */ }
+      setError('');
+    } catch {
+      setError(t('Captcha could not be loaded. Try again.'));
+    }
   };
 
   const verifyCaptcha = async (): Promise<boolean> => {

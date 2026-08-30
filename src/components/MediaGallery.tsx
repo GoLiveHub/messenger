@@ -31,37 +31,52 @@ export function MediaGallery({ chatId, onClose }: { chatId: number; onClose: () 
   const [lightbox, setLightbox] = useState<MediaDTO | null>(null);
   const [urlCache, setUrlCache] = useState<Record<number, string>>({});
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const loadingRef = useRef(false);
+  const doneRef = useRef(false);
 
   const loadMedia = useCallback(async (before?: number) => {
-    if (loading) return;
+    if (loadingRef.current || doneRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     try {
       const items = await api.chatMedia(chatId, 50, before);
-      if (items.length === 0) { setLoading(false); return; }
+      if (items.length === 0) { doneRef.current = true; return; }
       setMedia((prev) => (before ? [...prev, ...items] : items));
-    } catch { /* ignore */ }
-    setLoading(false);
-  }, [chatId, loading]);
+      if (items.length < 50) doneRef.current = true;
+    } catch { doneRef.current = true; } finally {
+      setLoading(false);
+      loadingRef.current = false;
+    }
+  }, [chatId]);
 
   const loadLinks = useCallback(async () => {
-    if (loading) return;
+    if (loadingRef.current || doneRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     try {
       const res = await fetch(`/api/chats/${chatId}/links?limit=50`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setLinks(data.links ?? []);
+        if ((data.links ?? []).length < 50) doneRef.current = true;
+      } else {
+        doneRef.current = true;
       }
-    } catch { /* ignore */ }
-    setLoading(false);
-  }, [chatId, loading]);
+    } catch { doneRef.current = true; } finally {
+      setLoading(false);
+      loadingRef.current = false;
+    }
+  }, [chatId]);
 
   useEffect(() => {
     setMedia([]);
     setLinks([]);
     setLoading(false);
+    doneRef.current = false;
+    loadingRef.current = false;
     if (tab === 'photos' || tab === 'files') loadMedia();
     else loadLinks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, tab]);
 
   useEffect(() => {
@@ -91,6 +106,20 @@ export function MediaGallery({ chatId, onClose }: { chatId: number; onClose: () 
   const images = media.filter((m) => m.kind === 'photo');
   const files = media.filter((m) => m.kind !== 'photo');
 
+  // Lightbox: fetch the blob on demand so the viewer never hangs on gray
+  useEffect(() => {
+    if (!lightbox || urlCache[lightbox.id]) return;
+    let alive = true;
+    api.fetchMediaBlob(lightbox.id).then((blob) => {
+      const url = URL.createObjectURL(blob);
+      if (alive) setUrlCache((p) => ({ ...p, [lightbox.id]: url }));
+    }).catch(() => {
+      if (alive) setLightbox(null);
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lightbox]);
+
   return (
     <div className="gallery-overlay" role="dialog" aria-modal="true" aria-label={t('Media')}>
       <div className="gallery-header">
@@ -115,7 +144,7 @@ export function MediaGallery({ chatId, onClose }: { chatId: number; onClose: () 
               {urlCache[m.id] ? <img src={urlCache[m.id]} alt={m.name} loading="lazy" /> : <span className="media-img-loading" />}
             </div>
           ))}
-          <div ref={sentinelRef} className="gallery-sentinel" />
+          {images.length > 0 && <div ref={sentinelRef} className="gallery-sentinel" />}
           {loading && <div className="gallery-loading">{t('Loading…')}</div>}
           {!loading && images.length === 0 && <div className="gallery-empty">{t('No media')}</div>}
         </div>
@@ -140,7 +169,7 @@ export function MediaGallery({ chatId, onClose }: { chatId: number; onClose: () 
               </button>
             </div>
           ))}
-          <div ref={sentinelRef} className="gallery-sentinel" />
+          {files.length > 0 && <div ref={sentinelRef} className="gallery-sentinel" />}
           {loading && <div className="gallery-loading">{t('Loading…')}</div>}
           {!loading && files.length === 0 && <div className="gallery-empty">{t('No files')}</div>}
         </div>
@@ -157,6 +186,7 @@ export function MediaGallery({ chatId, onClose }: { chatId: number; onClose: () 
               </div>
             </a>
           ))}
+          {links.length > 0 && <div ref={sentinelRef} className="gallery-sentinel" />}
           {loading && <div className="gallery-loading">{t('Loading…')}</div>}
           {!loading && links.length === 0 && <div className="gallery-empty">{t('No links')}</div>}
         </div>
