@@ -94,7 +94,7 @@ export function connectSocket(_token: string, handlers: ChatEvents): Socket {
       const { store } = await import('./store');
       const activeChatId = store.get().activeChatId;
       if (activeChatId) {
-        socket!.emit('chat:join', { chatId: activeChatId });
+        socket!.emit('chat:join', activeChatId);
         // Re-emit read receipts for active chat
         const msgs = store.get().messages[activeChatId] ?? [];
         const lastMsg = msgs[msgs.length - 1];

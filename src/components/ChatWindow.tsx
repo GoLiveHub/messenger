@@ -258,7 +258,7 @@ export function ChatWindow() {
   const recSwipeRef = useRef<{ startX: number; currentX: number } | null>(null);
   const [recSwipeX, setRecSwipeX] = useState(0);
   const SWIPE_CANCEL_THRESHOLD = 120;
-  const [pendingMedia, setPendingMedia] = useState<{ file: File; preview: string; kind: 'photo' | 'file' } | null>(null);
+  const [pendingMedia, setPendingMedia] = useState<Array<{ file: File; preview: string; kind: 'photo' | 'file' | 'audio' }>>([]);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [linkPreviews, setLinkPreviews] = useState<Record<string, { url: string; title: string | null; description: string | null; image: string | null }>>({});
   const [scheduleOpen, setScheduleOpen] = useState(false);
@@ -587,7 +587,13 @@ export function ChatWindow() {
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeChatId || !draft.trim()) return;
+    if (!activeChatId) return;
+    // If files are pending, send them (with optional text)
+    if (pendingMedia.length > 0) {
+      void sendPendingMedia();
+      return;
+    }
+    if (!draft.trim()) return;
     if (isSecret && (!me || !secretKeys.has(secretKeyId(me.id, activeChatId)))) {
       alert(t('Encryption is still initializing. Please try again in a moment.'));
       return;
@@ -660,7 +666,7 @@ export function ChatWindow() {
     }
   };
 
-  const sendMedia = async (file: File, kind: 'photo' | 'file' | 'audio') => {
+  const sendMedia = async (file: File, kind: 'photo' | 'file' | 'audio'): Promise<{ mediaId: number; e2eText?: string } | undefined> => {
     if (!activeChatId) return;
     const abortCtrl = new AbortController();
     uploadAbortRef.current = abortCtrl;
@@ -672,22 +678,17 @@ export function ChatWindow() {
         const { compressImage } = await import('../mediaUpload');
         uploadFile = await compressImage(file as File);
       }
-      let mediaId: number | undefined;
       if (isSecret && me) {
-        // Client-side E2E encryption for secret chat files
         const session = secretKeys.get(secretKeyId(me.id, activeChatId));
         if (!session) throw new Error('Encryption session not ready');
         const fileBuffer = await (uploadFile as Blob).arrayBuffer();
         const fileKey = await generateFileKey();
         const { encrypted, iv } = await encryptFile(fileBuffer, fileKey);
-        // Encrypt the file key using the E2E ratchet
         const fileKeyB64 = await exportFileKey(fileKey);
         const encKey = await encryptSecret(session.sendKey, fileKeyB64);
-        // Advance send ratchet
         const { chainKey: newSendKey } = await ratchetStep(session.sendKey);
         session.sendKey = newSendKey;
         session.messageNum++;
-        // Upload the encrypted blob (server adds its own at-rest encryption)
         const { media } = await api.uploadFileWithProgress(
           activeChatId,
           kind,
@@ -698,15 +699,8 @@ export function ChatWindow() {
           undefined,
           abortCtrl.signal,
         );
-        mediaId = media.id;
-        // Send message with E2E file key info as the text
-        const keyInfo = JSON.stringify({ e2e_file: true, cipher: encKey.cipher, iv: encKey.iv });
-        const real = await doSend({ text: keyInfo, mediaId, replyTo: replyTo?.id });
-        if (real) mergeMessage(real);
-        setReplyTo(null);
-        return;
+        return { mediaId: media.id, e2eText: JSON.stringify({ e2e_file: true, cipher: encKey.cipher, iv: encKey.iv }) };
       }
-      // Non-secret: upload normally
       const { media } = await api.uploadFileWithProgress(
         activeChatId,
         kind,
@@ -717,13 +711,12 @@ export function ChatWindow() {
         undefined,
         abortCtrl.signal,
       );
-      const real = await doSend({ mediaId: media.id, replyTo: replyTo?.id });
-      if (real) mergeMessage(real);
-      setReplyTo(null);
+      return { mediaId: media.id };
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
         alert((err as Error).message);
       }
+      return undefined;
     } finally {
       setUploadProgress(null);
       setUploadingFile('');
@@ -734,31 +727,54 @@ export function ChatWindow() {
   const onFiles = (files: FileList | null) => {
     if (!files) return;
     const arr = Array.from(files);
-    arr.forEach((f) => {
-      const kind: 'photo' | 'file' | 'audio' = f.type.startsWith('image/')
-        ? 'photo'
-        : f.type.startsWith('audio/')
-          ? 'audio'
-          : 'file';
-      if (kind === 'photo') {
-        setPendingMedia({ file: f, preview: URL.createObjectURL(f), kind });
-        return;
-      }
-      void sendMedia(f, kind);
+    setPendingMedia((prev) => [
+      ...prev,
+      ...arr.map((f) => {
+        const kind: 'photo' | 'file' | 'audio' = f.type.startsWith('image/')
+          ? 'photo'
+          : f.type.startsWith('audio/')
+            ? 'audio'
+            : 'file';
+        return { file: f, preview: kind === 'photo' ? URL.createObjectURL(f) : '', kind };
+      }),
+    ]);
+  };
+
+  const removePendingMedia = (idx: number) => {
+    setPendingMedia((prev) => {
+      const item = prev[idx];
+      if (item && item.preview) URL.revokeObjectURL(item.preview);
+      return prev.filter((_, i) => i !== idx);
     });
   };
 
-  const confirmPendingMedia = () => {
-    if (!pendingMedia) return;
-    const it = pendingMedia;
-    setPendingMedia(null);
-    void sendMedia(it.file, it.kind);
+  const clearPendingMedia = () => {
+    setPendingMedia((prev) => {
+      prev.forEach((p) => { if (p.preview) URL.revokeObjectURL(p.preview); });
+      return [];
+    });
   };
 
-  const cancelPendingMedia = () => {
-    if (!pendingMedia) return;
-    URL.revokeObjectURL(pendingMedia.preview);
-    setPendingMedia(null);
+  // Send selected media (+ optional caption) together; voice handled separately.
+  const sendPendingMedia = async () => {
+    if (!activeChatId || pendingMedia.length === 0) return;
+    const items = pendingMedia;
+    const caption = draft.trim();
+    setPendingMedia([]);
+    setDraft('');
+    try { localStorage.removeItem(`draft_${activeChatId}`); } catch { /* ignore */ }
+    sendTyping(activeChatId, false);
+    const replyId = replyTo?.id;
+    setReplyTo(null);
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const result = await sendMedia(item.file, item.kind);
+      if (!result) continue;
+      const text = result.e2eText ?? (i === 0 ? caption : undefined);
+      const real = await doSend({ mediaId: result.mediaId, text, replyTo: i === 0 ? replyId : undefined });
+      if (real) mergeMessage(real);
+    }
   };
 
   const cancelUpload = () => {
@@ -1650,18 +1666,21 @@ export function ChatWindow() {
               onClose={() => setMentionQuery(null)}
             />
           )}
-        {pendingMedia && (
+        {pendingMedia.length > 0 && (
           <div className="media-confirm-bar">
-            {pendingMedia.preview.startsWith('data:') || pendingMedia.kind === 'photo' ? (
-              <img className="media-confirm-thumb" src={pendingMedia.preview} alt="" />
-            ) : null}
-            <span className="media-confirm-name">{pendingMedia.file.name}</span>
-            <button type="button" className="btn primary" onClick={confirmPendingMedia} title={t('Send photo')}>
-              <SendIcon />
-            </button>
-            <button type="button" className="icon-btn danger-text" onClick={cancelPendingMedia} title={t('Cancel')}>
-              <CloseIcon size={18} />
-            </button>
+            {pendingMedia.map((item, idx) => (
+              <div key={idx} className="media-confirm-item">
+                {item.preview.startsWith('data:') || item.kind === 'photo' ? (
+                  <img className="media-confirm-thumb" src={item.preview} alt="" />
+                ) : (
+                  <span className="media-confirm-icon">📎</span>
+                )}
+                <span className="media-confirm-name">{item.file.name}</span>
+                <button type="button" className="icon-btn danger-text" onClick={() => removePendingMedia(idx)} title={t('Cancel')}>
+                  <CloseIcon size={14} />
+                </button>
+              </div>
+            ))}
           </div>
         )}
         <form className="composer" onSubmit={editingId !== null ? submitEdit : handleSend}>
@@ -1727,11 +1746,11 @@ export function ChatWindow() {
               )}
             </div>
           )}
-          {editingId !== null || draft.trim() ? (
+          {editingId !== null || draft.trim() || pendingMedia.length > 0 ? (
             <button
               type="submit"
               className="composer-send"
-              disabled={editingId !== null ? !editText.trim() : !draft.trim()}
+              disabled={editingId !== null ? !editText.trim() : !draft.trim() && pendingMedia.length === 0}
               title={t('Send')}
             >
               <SendIcon />

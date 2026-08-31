@@ -334,8 +334,10 @@ export const api = {
       body: JSON.stringify({ muted }),
     }),
   getMessages: (chatId: number, before?: number) => request<MessageDTO[]>(`/api/chats/${chatId}/messages${before ? `?before=${before}` : ''}`),
-  searchMessages: (chatId: number, q: string) =>
-    request<MessageDTO[]>(`/api/chats/${chatId}/search?q=${encodeURIComponent(q)}`),
+  searchMessages: async (chatId: number, q: string) => {
+    const res = await request<{ results: MessageDTO[]; hasMore?: boolean }>(`/api/chats/${chatId}/search?q=${encodeURIComponent(q)}`);
+    return res.results ?? [];
+  },
   searchAllMessages: (q: string, opts?: { author?: number; from?: string; to?: string }) => {
     const params = new URLSearchParams({ q });
     if (opts?.author) params.set('author', String(opts.author));
