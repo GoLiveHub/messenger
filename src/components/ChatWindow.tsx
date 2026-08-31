@@ -12,6 +12,7 @@ import { EmojiPicker } from './EmojiPicker';
 import { AddMembersModal } from './AddMembersModal';
 import { EditGroupModal } from './EditGroupModal';
 import { MentionAutocomplete } from './MentionAutocomplete';
+import { Lightbox } from './Lightbox';
 import { t, tx, useLang } from '../i18n';
 import { formatBytes, downloadMedia, getMediaUrl } from '../media';
 import { cacheMessages } from '../offlineDb';
@@ -2210,41 +2211,6 @@ function MessageRowInner(props: {
 }
 
 const MessageRow = memo(MessageRowInner);
-
-function Lightbox({ media, onClose, fileKey }: { media: MediaDTO; onClose: () => void; fileKey?: string }) {
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    let alive = true;
-    if (fileKey) {
-      (async () => {
-        try {
-          const blob = await api.fetchMediaBlob(media.id);
-          const arrayBuf = await blob.arrayBuffer();
-          const key = await importFileKey(fileKey);
-          const decrypted = await decryptFile(arrayBuf, new ArrayBuffer(0), key);
-          const decBlob = new Blob([decrypted], { type: media.mime || 'application/octet-stream' });
-          if (alive) setUrl(URL.createObjectURL(decBlob));
-        } catch { /* ignore */ }
-      })();
-    } else {
-      getMediaUrl(media.id).then((u) => alive && setUrl(u)).catch(() => {});
-    }
-    return () => { alive = false; };
-  }, [media.id, fileKey]);
-  // E2E blobs are fresh — revoke on cleanup. Cached (shared) URLs are managed by media.ts LRU
-  useEffect(() => { return () => { if (url && url.startsWith('blob:') && fileKey) URL.revokeObjectURL(url); }; }, [url, fileKey]);
-  return (
-    <div className="lightbox" onClick={onClose}>
-      <button className="icon-btn lightbox-close" onClick={onClose} title={t('Close')}>
-        <CloseIcon size={22} />
-      </button>
-      {url && <img src={url} alt={media.name} onClick={(e) => e.stopPropagation()} />}
-      <button className="lightbox-download icon-btn" title={t('Download')} onClick={() => downloadE2EMedia(media, fileKey)}>
-        <DownloadIcon size={20} />
-      </button>
-    </div>
-  );
-}
 
 function highlightText(text: string, q: string) {
   const qLower = q.toLowerCase();

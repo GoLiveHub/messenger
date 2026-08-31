@@ -8,7 +8,7 @@ import { loadImage, resizeToDataUrl } from '../lib/image';
 import { useFocusTrap, useEscapeKey } from '../hooks';
 import { markChatAutoOpened } from '../useMessengerSocket';
 
-export function NewGroupModal({ kind, onClose }: { kind: 'group' | 'channel'; onClose: () => void }) {
+export function NewGroupModal({ kind, onClose, onCreated }: { kind: 'group' | 'channel'; onClose: () => void; onCreated?: () => void }) {
   useLang();
   useEscapeKey(onClose);
   const trapRef = useFocusTrap(true);
@@ -90,6 +90,7 @@ export function NewGroupModal({ kind, onClose }: { kind: 'group' | 'channel'; on
       markChatAutoOpened(info.chat.chat.id);
       store.set({ chats: await api.getChats(), activeChatId: info.chat.chat.id });
       onClose();
+      onCreated?.();
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);

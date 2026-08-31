@@ -183,7 +183,7 @@ export function ContactsModal({ onClose }: { onClose: () => void }) {
           <CloseIcon size={20} />
         </button>
       </div>
-      {newGroupKind && <NewGroupModal kind={newGroupKind} onClose={() => setNewGroupKind(null)} />}
+      {newGroupKind && <NewGroupModal kind={newGroupKind} onClose={() => setNewGroupKind(null)} onCreated={onClose} />}
     </div>
   );
 }

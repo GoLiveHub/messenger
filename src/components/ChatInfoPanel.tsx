@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { store, useApp, setGroupMembers } from '../store';
-import { api } from '../api';
+import { api, type MediaDTO } from '../api';
 import { initCall } from '../socket';
 import { Avatar } from './Avatar';
 import { MediaImage } from './MediaImage';
@@ -39,6 +39,7 @@ export function ChatInfoPanel() {
   const [showAdd, setShowAdd] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryMedia, setGalleryMedia] = useState<MediaDTO | null>(null);
   const [safetyNum, setSafetyNum] = useState<string | null>(null);
   const [prevFp, setPrevFp] = useState<string | null>(null);
   const [fpWarning, setFpWarning] = useState(false);
@@ -381,7 +382,7 @@ export function ChatInfoPanel() {
               {media
                 .filter((m) => m.kind === 'photo')
                 .map((m) => (
-                  <MediaImage key={m.id} media={m} className="info-media-thumb" onClick={() => setGalleryOpen(true)} />
+                  <MediaImage key={m.id} media={m} className="info-media-thumb" onClick={() => { setGalleryMedia(m); setGalleryOpen(true); }} />
                 ))}
             </div>
             <div className="info-media-audios">
@@ -392,7 +393,7 @@ export function ChatInfoPanel() {
                 ))}
             </div>
             {media.length >= 5 && (
-              <button className="mini" onClick={() => setGalleryOpen(true)}>{t('View all')}</button>
+              <button className="mini" onClick={() => { setGalleryMedia(null); setGalleryOpen(true); }}>{t('View all')}</button>
             )}
           </>
         )}
@@ -476,7 +477,7 @@ export function ChatInfoPanel() {
 
       {showAdd && activeChatId && <AddMembersModal chatId={activeChatId} onClose={() => setShowAdd(false)} />}
       {showEdit && activeChatId && <EditGroupModal chatId={activeChatId} onClose={() => setShowEdit(false)} />}
-      {galleryOpen && activeChatId && <MediaGallery chatId={activeChatId} onClose={() => setGalleryOpen(false)} />}
+      {galleryOpen && activeChatId && <MediaGallery chatId={activeChatId} initialMedia={galleryMedia ?? undefined} onClose={() => setGalleryOpen(false)} />}
     </aside>
   );
 }

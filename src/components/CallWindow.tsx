@@ -35,6 +35,7 @@ export function CallWindow() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -199,17 +200,35 @@ export function CallWindow() {
     return () => { cancelled = true; };
   }, [callId, isOutgoing, callType, startLocalMedia, createPeer, activeCall]);
 
+  const flushPendingIce = useCallback(() => {
+    const pc = pcRef.current;
+    if (!pc || !pc.remoteDescription) return;
+    const pending = pendingIceRef.current;
+    pendingIceRef.current = [];
+    for (const cand of pending) {
+      try {
+        void pc.addIceCandidate(new RTCIceCandidate(cand)).catch(() => {});
+      } catch { /* ignore */ }
+    }
+  }, []);
+
   // Handle WebRTC offer (incoming call accepted)
   useEffect(() => {
     const onOffer = async (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (detail.callId !== callId) return;
 
-      const stream = await startLocalMedia(callType === 'video');
-      if (!stream) return;
+      // Reuse the media stream already acquired by handleAccept if present,
+      // otherwise request it now (avoids requesting permission twice).
+      let stream = localStreamRef.current;
+      if (!stream) {
+        stream = await startLocalMedia(callType === 'video');
+        if (!stream) return;
+      }
 
       const pc = createPeer(stream);
       await pc.setRemoteDescription(new RTCSessionDescription(detail.sdp));
+      flushPendingIce();
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       sendCallAnswer(callId!, pc.localDescription!.toJSON());
@@ -217,7 +236,7 @@ export function CallWindow() {
 
     window.addEventListener('webrtc:offer', onOffer);
     return () => window.removeEventListener('webrtc:offer', onOffer);
-  }, [callId, callType, startLocalMedia, createPeer]);
+  }, [callId, callType, startLocalMedia, createPeer, flushPendingIce]);
 
   // Handle WebRTC answer
   useEffect(() => {
@@ -226,22 +245,32 @@ export function CallWindow() {
       if (detail.callId !== callId) return;
       if (pcRef.current) {
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(detail.sdp));
+        flushPendingIce();
       }
     };
 
     window.addEventListener('webrtc:answer', onAnswer);
     return () => window.removeEventListener('webrtc:answer', onAnswer);
-  }, [callId]);
+  }, [callId, flushPendingIce]);
 
   // Handle ICE candidates
   useEffect(() => {
     const onIce = async (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (detail.callId !== callId) return;
-      if (pcRef.current) {
-        try {
-          await pcRef.current.addIceCandidate(new RTCIceCandidate(detail.candidate));
-        } catch { /* ignore */ }
+      const pc = pcRef.current;
+      if (!pc) {
+        // PC not created yet — the event arrived before the offer/answer was
+        // processed. Buffer it and flush once the remote description is set.
+        pendingIceRef.current.push(detail.candidate as RTCIceCandidateInit);
+        return;
+      }
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(detail.candidate));
+      } catch {
+        // Remote description may not be set yet at the time a candidate lands.
+        // Buffer and retry later rather than silently dropping the candidate.
+        pendingIceRef.current.push(detail.candidate as RTCIceCandidateInit);
       }
     };
 
@@ -437,7 +466,10 @@ export function CallWindow() {
           </>
         )}
         {callType === 'audio' && (
-          <video ref={localVideoRef} className="call-video-local hidden" autoPlay playsInline muted />
+          <>
+            <audio ref={remoteVideoRef} autoPlay playsInline />
+            <video ref={localVideoRef} className="call-video-local hidden" autoPlay playsInline muted />
+          </>
         )}
       </div>
 

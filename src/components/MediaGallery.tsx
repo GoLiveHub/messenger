@@ -5,6 +5,7 @@ import { CloseIcon, FileIcon, GlobeIcon, ImageIcon } from './icons';
 import { useEscapeKey } from '../hooks';
 import { formatBytes, getMediaUrl } from '../media';
 import { t } from '../i18n';
+import { Lightbox } from './Lightbox';
 
 type Tab = 'photos' | 'files' | 'links';
 
@@ -22,7 +23,7 @@ function fmtTime(iso: string) {
   } catch { return ''; }
 }
 
-export function MediaGallery({ chatId, onClose }: { chatId: number; onClose: () => void }) {
+export function MediaGallery({ chatId, onClose, initialMedia }: { chatId: number; onClose: () => void; initialMedia?: MediaDTO }) {
   useEscapeKey(onClose);
   const [tab, setTab] = useState<Tab>('photos');
   const [media, setMedia] = useState<MediaDTO[]>([]);
@@ -92,33 +93,25 @@ export function MediaGallery({ chatId, onClose }: { chatId: number; onClose: () 
     return () => obs.disconnect();
   }, [media, loadMedia, tab]);
 
+  // Load blob URLs for the gallery grid via the shared, cached media pipeline.
   useEffect(() => {
     if (tab !== 'photos') return;
     for (const m of media) {
       if (urlCache[m.id]) continue;
-      api.fetchMediaBlob(m.id).then((blob) => {
-        const url = URL.createObjectURL(blob);
-        setUrlCache((prev) => ({ ...prev, [m.id]: url }));
+      getMediaUrl(m.id).then((url) => {
+        setUrlCache((prev) => (prev[m.id] ? prev : { ...prev, [m.id]: url }));
       }).catch(() => {});
     }
   }, [media, tab]);
 
+  // Open the lightbox on the requested photo immediately.
+  useEffect(() => {
+    if (initialMedia) setLightbox(initialMedia);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const images = media.filter((m) => m.kind === 'photo');
   const files = media.filter((m) => m.kind !== 'photo');
-
-  // Lightbox: fetch the blob on demand so the viewer never hangs on gray
-  useEffect(() => {
-    if (!lightbox || urlCache[lightbox.id]) return;
-    let alive = true;
-    api.fetchMediaBlob(lightbox.id).then((blob) => {
-      const url = URL.createObjectURL(blob);
-      if (alive) setUrlCache((p) => ({ ...p, [lightbox.id]: url }));
-    }).catch(() => {
-      if (alive) setLightbox(null);
-    });
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lightbox]);
 
   return (
     <div className="gallery-overlay" role="dialog" aria-modal="true" aria-label={t('Media')}>
@@ -192,15 +185,7 @@ export function MediaGallery({ chatId, onClose }: { chatId: number; onClose: () 
         </div>
       )}
 
-      {lightbox && (
-        <>
-          <div className="overlay-catch" onClick={() => setLightbox(null)} />
-          <div className="gallery-lightbox">
-            <button className="icon-btn gallery-lb-close" onClick={() => setLightbox(null)}><CloseIcon size={28} /></button>
-            {urlCache[lightbox.id] ? <img src={urlCache[lightbox.id]} alt={lightbox.name} /> : <div className="gallery-lb-placeholder">{t('Loading…')}</div>}
-          </div>
-        </>
-      )}
+      {lightbox && <Lightbox media={lightbox} onClose={() => setLightbox(null)} />}
     </div>
   );
 }
