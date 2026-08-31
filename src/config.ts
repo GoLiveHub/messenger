@@ -55,6 +55,11 @@ export const config = {
     scheduledMessages: true,
     folders: true,
   },
+  // Optional anti-spam: block messages to groups/channels from accounts younger
+  // than 24 hours. Defaults to OFF so fresh accounts (and Railway deploys that
+  // recreate accounts) can post to groups immediately. Enable explicitly with
+  // NEW_ACCOUNT_GROUP_COOLDOWN=1 for stricter signup anti-abuse.
+  newAccountGroupCooldown: process.env.NEW_ACCOUNT_GROUP_COOLDOWN === '1',
   // Logging
   logLevel: process.env.LOG_LEVEL || 'info',
 };

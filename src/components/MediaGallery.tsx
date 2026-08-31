@@ -185,7 +185,19 @@ export function MediaGallery({ chatId, onClose, initialMedia }: { chatId: number
         </div>
       )}
 
-      {lightbox && <Lightbox media={lightbox} onClose={() => setLightbox(null)} />}
+      {lightbox && (
+        <Lightbox
+          media={lightbox}
+          onClose={() => {
+            const closingInitial = initialMedia && lightbox.id === initialMedia.id;
+            setLightbox(null);
+            // If the lightbox was opened straight from the chat-details panel
+            // on a specific photo, closing it should return to the chat (not
+            // leave the gallery grid behind on a "grey screen").
+            if (closingInitial) onClose();
+          }}
+        />
+      )}
     </div>
   );
 }

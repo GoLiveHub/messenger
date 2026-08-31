@@ -36,6 +36,7 @@ export function CallWindow() {
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
+  const pendingOfferRef = useRef<RTCSessionDescriptionInit | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -212,12 +213,25 @@ export function CallWindow() {
     }
   }, []);
 
-  // Handle WebRTC offer (incoming call accepted)
+  // Handle WebRTC offer (incoming call)
   useEffect(() => {
     const onOffer = async (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (detail.callId !== callId) return;
 
+      // If this is an incoming call the user hasn't accepted yet, don't
+      // auto-answer or grab the camera/mic. Buffer the offer and process it
+      // only after the user clicks Accept (see handleAccept).
+      const st = store.get();
+      if (st.activeCall?.direction === 'incoming' && st.activeCall.status === 'ringing') {
+        pendingOfferRef.current = detail.sdp as RTCSessionDescriptionInit;
+        return;
+      }
+
+      await processOffer(detail.sdp as RTCSessionDescriptionInit);
+    };
+
+    const processOffer = async (sdp: RTCSessionDescriptionInit) => {
       // Reuse the media stream already acquired by handleAccept if present,
       // otherwise request it now (avoids requesting permission twice).
       let stream = localStreamRef.current;
@@ -227,7 +241,7 @@ export function CallWindow() {
       }
 
       const pc = createPeer(stream);
-      await pc.setRemoteDescription(new RTCSessionDescription(detail.sdp));
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
       flushPendingIce();
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
@@ -297,11 +311,29 @@ export function CallWindow() {
     if (!callId) return;
     acceptCall(callId);
     store.set({ activeCall: activeCall ? { ...activeCall, status: 'connecting' } : null });
-    // Start local media and wait for offer
+    // Start local media and wait for the (buffered) offer
     const stream = await startLocalMedia(callType === 'video');
     if (!stream) {
       endCall(callId);
       cleanup();
+      return;
+    }
+    // If the offer already arrived while the call was ringing, answer it now.
+    const buffered = pendingOfferRef.current;
+    if (buffered) {
+      pendingOfferRef.current = null;
+      const pc = createPeer(stream);
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(buffered));
+        flushPendingIce();
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        sendCallAnswer(callId, pc.localDescription!.toJSON());
+      } catch (err) {
+        console.error('Answer failed', err);
+        endCall(callId);
+        cleanup();
+      }
     }
   };
 

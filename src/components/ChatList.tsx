@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useApp, store } from '../store';
 import { useMessengerSocket } from '../useMessengerSocket';
 import { api, type User } from '../api';
@@ -64,6 +65,7 @@ export function ChatList() {
   const [showSaved, setShowSaved] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [menuChat, setMenuChat] = useState<number | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const [chatsLoaded, setChatsLoaded] = useState(false);
   const [chatOffset, setChatOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
@@ -396,32 +398,23 @@ export function ChatList() {
                 title={t('More')}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setMenuChat((m) => (m === item.chat.id ? null : item.chat.id));
+                  if (menuChat === item.chat.id) {
+                    setMenuChat(null);
+                    setMenuPos(null);
+                  } else {
+                    // Record the trigger's screen position so the menu can be
+                    // rendered in a portal (escaping the chat-list scroll
+                    // container that would otherwise clip/hide it).
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    const menuW = 208;
+                    const left = Math.max(8, Math.min(window.innerWidth - menuW - 8, rect.right - menuW));
+                    setMenuPos({ top: rect.bottom + 6, left });
+                    setMenuChat(item.chat.id);
+                  }
                 }}
               >
                 <DotsIcon size={18} />
               </button>
-              {menuChat === item.chat.id && (
-                <>
-                  <div className="overlay-catch" onClick={() => setMenuChat(null)} />
-                  <div className="chat-context-menu">
-                    <button onClick={() => toggleArchive(item.chat.id)}>
-                      <ArchiveIcon size={16} /> {item.archived ? t('Unarchive') : t('Archive')}
-                    </button>
-                    <button onClick={() => togglePin(item.chat.id)}>
-                      <PinIcon size={16} /> {item.pinned ? t('Unpin chat') : t('Pin chat')}
-                    </button>
-                    {item.unread > 0 && (
-                      <button onClick={() => markRead(item.chat.id)}>
-                        <CheckIcon size={16} /> {t('Mark as read')}
-                      </button>
-                    )}
-                    <button className="danger-text" onClick={() => deleteChatItem(item.chat.id)}>
-                      <TrashIcon size={16} /> {isGroup ? t('Leave group') : t('Delete chat')}
-                    </button>
-                  </div>
-                </>
-              )}
             </div>
           );
         })}
@@ -511,6 +504,42 @@ export function ChatList() {
       {showInfo && <InfoModal onClose={() => setShowInfo(false)} />}
       {showContacts && <ContactsModal onClose={() => setShowContacts(false)} />}
       {showSaved && <SavedMessagesModal onClose={() => setShowSaved(false)} />}
+
+      {menuChat != null && menuPos && createPortal(
+        (() => {
+          const item = visible.find((it) => it.chat.id === menuChat);
+          const isGroup = item ? (item.chat.kind === 'group' || item.chat.kind === 'channel') : false;
+          return (
+            <>
+              <div className="overlay-catch" onClick={() => { setMenuChat(null); setMenuPos(null); }} />
+              <div
+                className="chat-context-menu"
+                style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, zIndex: 2000, margin: 0 }}
+              >
+                {item ? (
+                  <>
+                    <button onClick={() => { toggleArchive(item.chat.id); setMenuChat(null); setMenuPos(null); }}>
+                      <ArchiveIcon size={16} /> {item.archived ? t('Unarchive') : t('Archive')}
+                    </button>
+                    <button onClick={() => { togglePin(item.chat.id); setMenuChat(null); setMenuPos(null); }}>
+                      <PinIcon size={16} /> {item.pinned ? t('Unpin chat') : t('Pin chat')}
+                    </button>
+                    {item.unread > 0 && (
+                      <button onClick={() => { markRead(item.chat.id); setMenuChat(null); setMenuPos(null); }}>
+                        <CheckIcon size={16} /> {t('Mark as read')}
+                      </button>
+                    )}
+                    <button className="danger-text" onClick={() => { deleteChatItem(item.chat.id); setMenuChat(null); setMenuPos(null); }}>
+                      <TrashIcon size={16} /> {isGroup ? t('Leave group') : t('Delete chat')}
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            </>
+          );
+        })(),
+        document.body,
+      )}
     </aside>
   );
 }

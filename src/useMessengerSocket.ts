@@ -210,12 +210,17 @@ export function useMessengerSocket(_token?: string) {
           },
         });
         if ('Notification' in window && Notification.permission === 'granted') {
-          const n = new Notification(p.callerName, {
-            body: p.callType === 'video' ? 'Incoming video call…' : 'Incoming voice call…',
-            icon: '/icon-192.png',
-            tag: `call-${p.callId}`,
-          } as NotificationOptions);
-          n.onclick = () => { window.focus(); n.close(); };
+          try {
+            const n = new Notification(p.callerName, {
+              body: p.callType === 'video' ? 'Incoming video call…' : 'Incoming voice call…',
+              icon: '/icon-192.png',
+              tag: `call-${p.callId}`,
+            } as NotificationOptions);
+            n.onclick = () => { window.focus(); n.close(); };
+          } catch {
+            // Notification construction can throw (e.g. some mobile browsers);
+            // never let it break the incoming-call UI.
+          }
         }
       },
       'call:initiated': (p) => {

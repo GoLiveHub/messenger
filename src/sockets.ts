@@ -275,8 +275,10 @@ export function registerSockets(io: Server) {
         messageWindowCount += 1;
         if (messageWindowCount > 120) return ack?.({ ok: false, error: 'Too many messages. Slow down.' });
 
-        // New account restriction: 24h cooldown for group/channel posts (production only)
-        if (process.env.NODE_ENV === 'production') {
+        // Optional anti-abuse: 24h cooldown for group/channel posts from new
+        // accounts. Gated behind NEW_ACCOUNT_GROUP_COOLDOWN=1 (off by default) so
+        // fresh accounts can test groups immediately on production deploys.
+        if (config.newAccountGroupCooldown) {
           const userRow = db.prepare('SELECT created_at FROM users WHERE id = ?').get(selfId) as { created_at?: string } | undefined;
           if (userRow?.created_at) {
             const accountAge = (Date.now() - new Date(userRow.created_at).getTime()) / 1000;
