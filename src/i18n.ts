@@ -146,6 +146,7 @@ const ru: Record<string, string> = {
   'End-to-end encrypted text only': 'Только текст со сквозным шифрованием',
   'Encryption is still initializing. Please try again in a moment.': 'Шифрование ещё инициализируется. Повторите попытку через мгновение.',
   'typing…': 'печатает…',
+  'recording a voice message…': 'записывает голосовое сообщение…',
   'online': 'в сети',
   'offline': 'не в сети',
   'Search in chat': 'Поиск в чате',

@@ -996,7 +996,7 @@ function AccountTab({ me }: { me: User }) {
     }
     clearE2EKeyCache(me.id);
     clearMediaCache();
-    store.set({ me: null, chats: [], messages: {}, activeChatId: null, online: {}, typing: {} });
+    store.set({ me: null, chats: [], messages: {}, activeChatId: null, online: {}, typing: {}, recording: {} });
   };
 
   const del = async () => {

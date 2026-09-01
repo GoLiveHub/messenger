@@ -50,6 +50,7 @@ interface AppState {
   messages: Record<number, StoredMessage[]>;
   online: Record<number, boolean>;
   typing: Record<number, { userId: number; isTyping: boolean }>;
+  recording: Record<number, { userId: number; isRecording: boolean }>;
   folder: FolderId;
   infoOpen: boolean;
   settingsOpen: boolean;
@@ -71,6 +72,7 @@ let state: AppState = {
   messages: {},
   online: {},
   typing: {},
+  recording: {},
   folder: 'all',
   infoOpen: false,
   settingsOpen: false,

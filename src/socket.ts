@@ -38,6 +38,7 @@ export interface ChatEvents {
   'message:new': (m: IncomingMessage) => void;
   presence: (p: { userId: number; online: boolean }) => void;
   typing: (p: { chatId: number; userId: number; isTyping: boolean }) => void;
+  recording: (p: { chatId: number; userId: number; isRecording: boolean }) => void;
   'message:read': (p: { chatId: number; messageId: number; userId: number; read_at?: string }) => void;
   'message:edited': (p: { chatId: number; messageId: number; text: string }) => void;
   'message:deleted': (p: { chatId: number; messageId: number }) => void;
@@ -183,6 +184,10 @@ export function sendReact(chatId: number, messageId: number, emoji: string): Pro
 
 export function sendTyping(chatId: number, isTyping: boolean) {
   socket?.emit('typing', { chatId, isTyping });
+}
+
+export function signalRecording(chatId: number, isRecording: boolean) {
+  socket?.emit('recording', { chatId, isRecording });
 }
 
 export function joinChat(chatId: number) {

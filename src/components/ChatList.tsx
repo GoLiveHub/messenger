@@ -138,7 +138,7 @@ export function ChatList() {
     }
     clearE2EKeyCache(me?.id);
     clearMediaCache();
-    store.set({ me: null, chats: [], messages: {}, activeChatId: null, online: {}, typing: {}, folder: 'all' });
+    store.set({ me: null, chats: [], messages: {}, activeChatId: null, online: {}, typing: {}, recording: {}, folder: 'all' });
   };
 
   const toggleNight = async () => {

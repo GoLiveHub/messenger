@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { store, useApp } from '../store';
 import { acceptCall, rejectCall, endCall, sendCallOffer, sendCallAnswer, sendCallIceCandidate } from '../socket';
+import { consumePendingCallOffer } from '../useMessengerSocket';
 import { Avatar } from './Avatar';
 import {
   PhoneIcon,
@@ -49,6 +50,7 @@ export function CallWindow() {
   const [sharing, setSharing] = useState(false);
   const [hasCamera, setHasCamera] = useState(false);
   const [cameraDeviceIds, setCameraDeviceIds] = useState<string[]>([]);
+  const [callFailed, setCallFailed] = useState<string | null>(null);
 
   const callId = activeCall?.callId ?? null;
   const isOutgoing = activeCall?.direction === 'outgoing';
@@ -213,6 +215,31 @@ export function CallWindow() {
     }
   }, []);
 
+  // Recover an offer that arrived before this window mounted (see
+  // consumePendingCallOffer). Without this, a fast offer is lost and the call
+  // stays at "Connecting" forever.
+  useEffect(() => {
+    if (!callId) return;
+    const sdp = consumePendingCallOffer(callId);
+    if (!sdp) return;
+    const st = store.get();
+    if (st.activeCall?.direction === 'incoming' && st.activeCall.status === 'ringing') {
+      pendingOfferRef.current = sdp;
+    } else {
+      void (async () => {
+        let stream = localStreamRef.current;
+        if (!stream) stream = await startLocalMedia(callType === 'video');
+        if (!stream) return;
+        const pc = createPeer(stream);
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        flushPendingIce();
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        sendCallAnswer(callId, pc.localDescription!.toJSON());
+      })();
+    }
+  }, [callId, callType, startLocalMedia, createPeer, flushPendingIce]);
+
   // Handle WebRTC offer (incoming call)
   useEffect(() => {
     const onOffer = async (e: Event) => {
@@ -305,6 +332,25 @@ export function CallWindow() {
   useEffect(() => {
     return () => cleanup();
   }, [cleanup]);
+
+  // Harden the call against hanging at "Connecting…" forever. If media cannot
+  // establish (no TURN behind a strict NAT), give up with a clear message.
+  useEffect(() => {
+    if (!callId) return;
+    setCallFailed(null);
+  }, [callId]);
+
+  useEffect(() => {
+    if (status !== 'connecting') return;
+    const tm = setTimeout(() => {
+      setCallFailed(t('Could not establish the call connection. Your network may block it (a relay/TURN server is required).'));
+    }, 30_000);
+    return () => clearTimeout(tm);
+  }, [status, callId]);
+
+  useEffect(() => {
+    if (status === 'connected') setCallFailed(null);
+  }, [status]);
 
   // Handle accept button
   const handleAccept = async () => {
@@ -489,6 +535,8 @@ export function CallWindow() {
         {status === 'connecting' && <span className="call-status">{t('Connecting…')}</span>}
         {status === 'connected' && <span className="call-status">{formatCallDuration(elapsed)}</span>}
       </div>
+
+      {callFailed && <div className="call-failed">{callFailed}</div>}
 
       <div className="call-videos">
         {callType === 'video' && (

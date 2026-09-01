@@ -77,6 +77,7 @@ export default function App() {
         activeChatId: null,
         online: {},
         typing: {},
+        recording: {},
         infoOpen: false,
         settingsOpen: false,
         adminOpen: false,

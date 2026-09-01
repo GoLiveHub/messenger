@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, store, setMessages, mergeMessage, replacePending, resendMessage, cancelMessage, type StoredMessage } from '../store';
 import { api, type MediaDTO, type User, type Topic } from '../api';
-import { sendMessage, sendTyping, joinChat, sendRead, editMessage, deleteMessage, sendReact, pinMessage } from '../socket';
+import { sendMessage, sendTyping, signalRecording, joinChat, sendRead, editMessage, deleteMessage, sendReact, pinMessage } from '../socket';
 import { getE2EKeys } from '../crypto/ensureKeys';
 import { deriveSharedKey, x3dh, encryptSecret, decryptSecret, ratchetStep, encryptFile, decryptFile, generateFileKey, exportFileKey, importFileKey, bytesToBase64, base64ToBytes, type RatchetState } from '../crypto/e2e';
 import { Avatar } from './Avatar';
@@ -192,7 +192,7 @@ function formatMarkdown(text: string, onHashtag?: (tag: string) => void): React.
 
 export function ChatWindow() {
   useLang();
-  const { me, chats, messages, activeChatId, online, typing, forwardOpen, users, features, socketConnected } = useApp();
+  const { me, chats, messages, activeChatId, online, typing, recording, forwardOpen, users, features, socketConnected } = useApp();
   const [draft, setDraft] = useState('');
   const [history, setHistory] = useState<Record<number, Record<number, { text: string; decryptError?: boolean; fileKey?: string }>>>({});
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -278,6 +278,7 @@ export function ChatWindow() {
   const canManageGroup = chat && (chat.role === 'owner' || chat.role === 'admin');
   const peerOnline = peer ? online[peer.id] : false;
   const peerTyping = chat ? typing[chat.chat.id] : undefined;
+  const peerRecording = chat ? recording[chat.chat.id] : undefined;
   const msgs = activeChatId ? (messages[activeChatId] ?? []) : [];
 
   // group chats use the group row as avatar/title source; messages show sender names
@@ -1097,6 +1098,7 @@ export function ChatWindow() {
         setRec((r) => ({ ...r, state: 'stopped', blob, duration: r.seconds }));
         setLiveWaveform(new Array(24).fill(0));
         if (recTimerRef.current) clearInterval(recTimerRef.current);
+        if (activeChatId) signalRecording(activeChatId, false);
       };
       mediaRecorder.start();
       // Live waveform via AnalyserNode
@@ -1121,6 +1123,7 @@ export function ChatWindow() {
       const rafId = requestAnimationFrame(drawWaveform);
       recorderRef.current = { mediaRecorder, stream, chunks, analyser, rafId };
       setRec({ state: 'recording', seconds: 0 });
+      if (activeChatId) signalRecording(activeChatId, true);
       recTimerRef.current = setInterval(() => {
         setRec((r) => {
           if (r.state !== 'recording') return r;
@@ -1151,6 +1154,7 @@ export function ChatWindow() {
     setRec({ state: 'idle', seconds: 0 });
     setRecSwipeX(0);
     recSwipeRef.current = null;
+    if (activeChatId) signalRecording(activeChatId, false);
   };
 
   // Swipe-to-cancel for recording bar
@@ -1272,7 +1276,9 @@ export function ChatWindow() {
                 <span className="lock" title={t('Channel')}><MegaphoneIcon size={15} /></span>
               )}
             </b>
-            {peerTyping?.isTyping ? (
+            {peerRecording?.isRecording ? (
+              <span className="chat-header-status recording">{t('recording a voice message…')}</span>
+            ) : peerTyping?.isTyping ? (
               <span className="chat-header-status typing">{t('typing…')}</span>
             ) : isGroup ? (
               <span className="chat-header-status">{tx('N members', { n: chat.member_count ?? 0 })}</span>

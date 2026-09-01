@@ -21,6 +21,23 @@ const BASE_TITLE = document.title;
 const chatAutoOpened = new Map<number, number>();
 const AUTO_OPEN_QUIET_MS = 4000;
 
+// Hold a peer "online" briefly after their socket drops so transient
+// disconnects (mobile backgrounding) don't flap the online indicator.
+const PRESENCE_OFFLINE_GRACE_MS = 90_000;
+const presenceOfflineTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+// Buffer the most recent WebRTC offer per call. The offer often arrives in the
+// same socket burst as "call:ringing", i.e. BEFORE CallWindow has mounted and
+// registered its "webrtc:offer" listener — without this buffer Bob would never
+// see the offer and the call would stay at "Connecting" forever.
+let pendingCallOffers = new Map<string, RTCSessionDescriptionInit>();
+
+export function consumePendingCallOffer(callId: string): RTCSessionDescriptionInit | null {
+  const offer = pendingCallOffers.get(callId) ?? null;
+  pendingCallOffers.delete(callId);
+  return offer;
+}
+
 export function markChatAutoOpened(chatId: number) {
   chatAutoOpened.set(chatId, Date.now());
   setTimeout(() => chatAutoOpened.delete(chatId), AUTO_OPEN_QUIET_MS + 500);
@@ -116,12 +133,34 @@ export function useMessengerSocket(_token?: string) {
         }
       },
       presence: (p) => {
-        const online = { ...store.get().online, [p.userId]: p.online };
-        store.set({ online });
+        // Add a short grace period before flipping a peer to "offline":
+        // mobile/backgrounded tabs briefly drop their socket, which would
+        // otherwise make the online indicator flap inconsistently.
+        const timers = presenceOfflineTimers;
+        const existing = timers.get(p.userId);
+        if (existing) {
+          clearTimeout(existing);
+          timers.delete(p.userId);
+        }
+        if (p.online) {
+          const online = { ...store.get().online, [p.userId]: true };
+          store.set({ online });
+        } else {
+          const t = setTimeout(() => {
+            timers.delete(p.userId);
+            const online = { ...store.get().online, [p.userId]: false };
+            store.set({ online });
+          }, PRESENCE_OFFLINE_GRACE_MS);
+          timers.set(p.userId, t);
+        }
       },
       typing: (p) => {
         const typing = { ...store.get().typing, [p.chatId]: { userId: p.userId, isTyping: p.isTyping } };
         store.set({ typing });
+      },
+      recording: (p) => {
+        const recording = { ...store.get().recording, [p.chatId]: { userId: p.userId, isRecording: p.isRecording } };
+        store.set({ recording });
       },
       'message:read': (p) => {
         markChatRead(p.chatId, p.messageId, p.userId, p.read_at ?? new Date().toISOString());
@@ -248,7 +287,10 @@ export function useMessengerSocket(_token?: string) {
         }
       },
       'call:offer': (_p) => {
-        // Handled by CallWindow component via custom event
+        // Buffer so CallWindow can pick it up even if it hasn't mounted yet
+        // (offer arrives in the same burst as call:ringing). CallWindow clears
+        // it via consumePendingCallOffer.
+        pendingCallOffers.set(_p.callId, _p.sdp as RTCSessionDescriptionInit);
         window.dispatchEvent(new CustomEvent('webrtc:offer', { detail: _p }));
       },
       'call:answer': (_p) => {

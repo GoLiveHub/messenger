@@ -998,6 +998,11 @@ body.no-effects * {
   color: var(--color-primary);
 }
 
+.chat-header-status.recording {
+  color: #ef5350;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
 .chat-header-actions {
   display: flex;
   align-items: center;
@@ -5503,6 +5508,20 @@ body.no-effects * {
   font-size: 1rem;
   color: rgba(255, 255, 255, 0.7);
   font-variant-numeric: tabular-nums;
+}
+
+.call-failed {
+  position: relative;
+  z-index: 3;
+  max-width: 420px;
+  margin: 0 1.5rem 1.5rem;
+  padding: 0.85rem 1.1rem;
+  border-radius: 12px;
+  background: rgba(255, 77, 79, 0.16);
+  border: 1px solid rgba(255, 77, 79, 0.45);
+  color: #ffd6d7;
+  font-size: 0.95rem;
+  text-align: center;
 }
 
 .call-videos {

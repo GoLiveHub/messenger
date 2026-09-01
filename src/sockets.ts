@@ -625,6 +625,15 @@ export function registerSockets(io: Server) {
       } catch { /* ignore */ }
     });
 
+    socket.on('recording', (payload) => {
+      try {
+        const chatId = Number(payload.chatId);
+        const isRecording = Boolean(payload.isRecording);
+        if (!getChatForUser(chatId, selfId)) return;
+        socket.to(room(chatId)).emit('recording', { chatId, userId: selfId, isRecording });
+      } catch { /* ignore */ }
+    });
+
     socket.on('message:read', (payload) => {
       try {
         const chatId = Number(payload.chatId);
