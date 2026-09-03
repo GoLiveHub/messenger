@@ -762,6 +762,11 @@ db.exec(`
 
 // Migrate chat_members to allow 'editor' role
 function migrateEditorRole() {
+  // Idempotent guard: skip if the table already allows 'editor'
+  try {
+    const ddl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='chat_members'").get() as { sql?: string } | undefined;
+    if (ddl?.sql && /\beditor\b/.test(ddl.sql)) return;
+  } catch { /* if we cannot inspect, fall through to the rebuild path */ }
   const colRows = db.prepare('PRAGMA table_info(chat_members)').all() as { name: string }[];
   const names = new Set(colRows.map((c) => c.name));
   // Check if the CHECK constraint needs updating by testing an insert

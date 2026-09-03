@@ -189,6 +189,27 @@ async function globalRateLimit(req: express.Request, res: express.Response, next
 // Apply global rate limit to all API routes
 app.use('/api', globalRateLimit);
 
+// Per-authenticated-user rate limiter (defense-in-depth after the per-IP one,
+// so a single logged-in user cannot hammer the API from many shared IPs).
+const PER_USER_LIMIT = 1200;
+async function perUserRateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const userId = (req as any).userId;
+  if (!userId) return next();
+  const key = `ratelimit:user:${userId}`;
+  try {
+    const count = await cacheIncr(key);
+    if (count === 1) await cacheExpire(key, 60);
+    if (count > PER_USER_LIMIT) {
+      log.suspicious('rate_limit_user', { userId, count });
+      res.set('Retry-After', '60');
+      return res.status(429).json({ error: t_server('rate_limit') });
+    }
+  } catch {
+    // Redis unavailable — skip per-user limiting gracefully
+  }
+  next();
+}
+
 // --- Localized server error messages ---
 const SERVER_ERRORS: Record<string, Record<string, string>> = {
   'en': {
@@ -315,7 +336,7 @@ function csrfProtection(req: express.Request, res: express.Response, next: expre
 }
 
 // Apply CSRF protection after auth (auth sets userId needed for logging)
-app.use('/api', auth, csrfProtection);
+app.use('/api', auth, csrfProtection, perUserRateLimit);
 
 // ======================== ROUTES ========================
 
@@ -2363,6 +2384,7 @@ app.post('/api/media/upload-init', (req, res) => {
   if (userSessions >= 5) return res.status(429).json({ error: 'Too many upload sessions. Wait for existing uploads to finish.' });
   const { chatId, kind, name, mime, totalChunks, size } = req.body ?? {};
   if (!chatId) return res.status(400).json({ error: 'Missing fields' });
+  if (!getChatForUser(Number(chatId), selfId)) return res.status(403).json({ error: 'Chat not found' });
   // Validate chunk count (positive integer, bounded to prevent sparse-array abuse)
   const nChunks = Number(totalChunks);
   if (!Number.isInteger(nChunks) || nChunks <= 0 || nChunks > MAX_TOTAL_CHUNKS) {
@@ -3630,15 +3652,14 @@ setInterval(() => {
     if (retentionDays <= 0) return;
     const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
     // Delete old messages and their media
-    const mediaIds = db.prepare('SELECT id, storage_key FROM messages WHERE created_at < ? AND media_id IS NOT NULL').all(cutoff) as { id: number; storage_key?: string }[];
     const mediaRows = db.prepare('SELECT id, storage_key FROM media WHERE id IN (SELECT media_id FROM messages WHERE created_at < ?)').all(cutoff) as { id: number; storage_key?: string }[];
     const msgResult = db.prepare(`DELETE FROM messages WHERE created_at < ?`).run(cutoff);
     // Delete storage blobs for purged media
     for (const m of mediaRows) {
       if (m.storage_key) deleteFile(m.storage_key).catch(() => {});
     }
-    if (mediaIds.length > 0) {
-      try { db.prepare(`DELETE FROM media WHERE id IN (${mediaIds.map(() => '?').join(',')})`).run(...mediaIds.map((m) => m.id)); } catch { /* ignore */ }
+    if (mediaRows.length > 0) {
+      try { db.prepare(`DELETE FROM media WHERE id IN (${mediaRows.map(() => '?').join(',')})`).run(...mediaRows.map((m) => m.id)); } catch { /* ignore */ }
     }
     // Purge old auth codes and phone_change_codes
     db.prepare("DELETE FROM auth_codes WHERE expires_at < datetime('now', '-1 day')").run();
@@ -3695,10 +3716,13 @@ app.post('/api/admin/data-retention/purge', (req, res) => {
   const retentionDays = config.dataRetentionDays;
   if (retentionDays <= 0) return res.status(400).json({ error: 'Retention disabled' });
   const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
-  const mediaIds = db.prepare('SELECT id FROM messages WHERE created_at < ? AND media_id IS NOT NULL').all(cutoff) as { id: number }[];
+  const mediaRows = db.prepare('SELECT id, storage_key FROM media WHERE id IN (SELECT media_id FROM messages WHERE created_at < ?)').all(cutoff) as { id: number; storage_key?: string }[];
   const result = db.prepare('DELETE FROM messages WHERE created_at < ?').run(cutoff);
-  if (mediaIds.length > 0) {
-    try { db.prepare(`DELETE FROM media WHERE id IN (${mediaIds.map(() => '?').join(',')})`).run(...mediaIds.map((m) => m.id)); } catch { /* ignore */ }
+  for (const m of mediaRows) {
+    if (m.storage_key) deleteFile(m.storage_key).catch(() => {});
+  }
+  if (mediaRows.length > 0) {
+    try { db.prepare(`DELETE FROM media WHERE id IN (${mediaRows.map(() => '?').join(',')})`).run(...mediaRows.map((m) => m.id)); } catch { /* ignore */ }
   }
   log.suspicious('admin_purge_data', { adminId: selfId, deleted: result.changes });
   res.json({ ok: true, deleted: result.changes });

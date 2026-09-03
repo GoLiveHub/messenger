@@ -11,6 +11,7 @@ import {
   getUserIdByToken,
   getUserById,
   getMediaById,
+  hasChatPermission,
   isBlocked,
   isChatMember,
   isGroupChat,
@@ -377,6 +378,11 @@ export function registerSockets(io: Server) {
               return ack?.({ ok: false, error: 'Only admins and editors can post in channels' });
             }
           }
+          // Permission matrix: send_messages / send_media override
+          const permission = payload.mediaId ? 'send_media' : 'send_messages';
+          if (!hasChatPermission(chatId, selfId, permission)) {
+            return ack?.({ ok: false, error: 'You do not have permission to send messages here' });
+          }
           // Slow mode enforcement
           const slowSeconds = (chat as any).slow_mode_seconds ?? 0;
           if (slowSeconds > 0) {
@@ -577,8 +583,8 @@ export function registerSockets(io: Server) {
         }
         ack?.({ ok: true, message });
 
-        // Send Web Push to offline members
-        if (isWebPushEnabled()) {
+        // Send Web Push to offline members (suppressed for shadow-banned senders)
+        if (!shadowBanned && isWebPushEnabled()) {
           const members = listChatMembers(chatId);
           const sender = senderUserDTO(selfId);
           const senderName = sender ? [sender.first_name, sender.last_name].filter(Boolean).join(' ') || sender.username || 'Someone' : 'Someone';
@@ -615,8 +621,8 @@ export function registerSockets(io: Server) {
           }
         }
 
-        // FCM mobile push to offline members
-        if (isFCMEnabled()) {
+        // FCM mobile push to offline members (suppressed for shadow-banned senders)
+        if (!shadowBanned && isFCMEnabled()) {
           const fcmMembers = listChatMembers(chatId);
           for (const m of fcmMembers) {
             if (m.user_id === selfId) continue;

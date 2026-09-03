@@ -285,6 +285,20 @@ export function chatMemberRole(chatId: number, userId: number): 'owner' | 'admin
   return m?.role ?? null;
 }
 
+// Permission matrix enforcement. No override row => allowed for everyone.
+// role_required: 'all' (any member) | 'admin' (owner/admin) | 'owner'.
+export function hasChatPermission(chatId: number, userId: number, permission: string): boolean {
+  const row = db
+    .prepare('SELECT role_required FROM chat_permissions WHERE chat_id = ? AND permission = ?')
+    .get(chatId, permission) as { role_required?: string } | undefined;
+  if (!row) return true;
+  const req = row.role_required;
+  if (req === 'all') return true;
+  const role = chatMemberRole(chatId, userId);
+  if (req === 'owner') return role === 'owner';
+  return role === 'owner' || role === 'admin';
+}
+
 export function addChatMember(chatId: number, userId: number, role: 'owner' | 'admin' | 'member' | 'editor' = 'member', promotedBy?: number): void {
   db.prepare(
     'INSERT OR IGNORE INTO chat_members (chat_id, user_id, role, promoted_by, joined_at) VALUES (?, ?, ?, ?, ?)',

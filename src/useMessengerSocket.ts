@@ -108,6 +108,13 @@ export function useMessengerSocket(_token?: string) {
           }
         }
         // update chat list preview + time
+        // Bump unread only when it actually counts: in mentions-only chats a
+        // non-mention message must NOT raise the badge (mirrors server chatUnreadCount).
+        const entry = st.chats.find((c) => c.chat.id === m.chat_id);
+        const mentionsOnly = entry?.notify_level === 'mentions';
+        const isMention = m.text?.includes(`@${st.me?.username}`)
+          || m.text?.includes(`@${[st.me?.first_name, st.me?.last_name].filter(Boolean).join(' ')}`);
+        const countsUnread = !mine && !active && (!mentionsOnly || isMention);
         store.set({
           chats: st.chats.map((c) =>
             c.chat.id === m.chat_id
@@ -121,7 +128,7 @@ export function useMessengerSocket(_token?: string) {
                     media_kind: m.media?.kind ?? null,
                     read_at: m.read_at,
                   },
-                  unread: !mine && !active ? c.unread + 1 : c.unread,
+                  unread: countsUnread ? c.unread + 1 : c.unread,
                 }
               : c,
           ),
