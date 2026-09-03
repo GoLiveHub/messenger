@@ -30,6 +30,7 @@ import {
   getUserByUsername,
   getUserByPhone,
   getUserIdByToken,
+  hasChatPermission,
   hideChatForUser,
   insertMedia,
   extractImageDimensions,
@@ -1431,8 +1432,7 @@ app.post('/api/groups/:id/members', (req, res) => {
   const chatId = Number(req.params.id);
   const chat = getChatById(chatId);
   if (!chat || !isGroupChat(chat)) return res.status(404).json({ error: 'Chat not found' });
-  const role = chatMemberRole(chatId, selfId);
-  if (role !== 'owner' && role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+  if (!hasChatPermission(chatId, selfId, 'add_members', 'admin')) return res.status(403).json({ error: 'Forbidden' });
   const userIds = Array.isArray(req.body?.userIds)
     ? req.body.userIds.map(Number).filter((n: number) => Number.isInteger(n) && n > 0)
     : [];
@@ -1500,8 +1500,7 @@ app.patch('/api/groups/:id', (req, res) => {
   const chatId = Number(req.params.id);
   const chat = getChatById(chatId);
   if (!chat || !isGroupChat(chat)) return res.status(404).json({ error: 'Chat not found' });
-  const role = chatMemberRole(chatId, selfId);
-  if (role !== 'owner' && role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+  if (!hasChatPermission(chatId, selfId, 'change_info', 'admin')) return res.status(403).json({ error: 'Forbidden' });
   const title = req.body?.title !== undefined ? String(req.body.title).trim() : (chat.title ?? '');
   const about = req.body?.about !== undefined ? String(req.body.about).trim().slice(0, 255) : chat.about;
   const photoBody = req.body?.photo;

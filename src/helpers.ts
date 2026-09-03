@@ -285,14 +285,20 @@ export function chatMemberRole(chatId: number, userId: number): 'owner' | 'admin
   return m?.role ?? null;
 }
 
-// Permission matrix enforcement. No override row => allowed for everyone.
-// role_required: 'all' (any member) | 'admin' (owner/admin) | 'owner'.
-export function hasChatPermission(chatId: number, userId: number, permission: string): boolean {
+// Permission matrix enforcement.
+// If an override row exists it sets the required role ('all' | 'admin' | 'owner').
+// If no override row exists we fall back to the platform default requirement,
+// so enabling the feature never accidentally relaxes the built-in policy.
+export function hasChatPermission(
+  chatId: number,
+  userId: number,
+  permission: string,
+  defaultRequire: 'all' | 'admin' | 'owner' = 'all',
+): boolean {
   const row = db
     .prepare('SELECT role_required FROM chat_permissions WHERE chat_id = ? AND permission = ?')
     .get(chatId, permission) as { role_required?: string } | undefined;
-  if (!row) return true;
-  const req = row.role_required;
+  const req = row ? row.role_required : defaultRequire;
   if (req === 'all') return true;
   const role = chatMemberRole(chatId, userId);
   if (req === 'owner') return role === 'owner';

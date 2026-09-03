@@ -378,8 +378,13 @@ export function registerSockets(io: Server) {
               return ack?.({ ok: false, error: 'Only admins and editors can post in channels' });
             }
           }
-          // Permission matrix: send_messages / send_media override
-          const permission = payload.mediaId ? 'send_media' : 'send_messages';
+          // Permission matrix: send_messages / send_media / send_stickers override
+          const permMediaId = payload.mediaId ? Number(payload.mediaId) : 0;
+          const permission = !permMediaId
+            ? 'send_messages'
+            : db.prepare('SELECT 1 FROM stickers WHERE file_id = ?').get(permMediaId)
+              ? 'send_stickers'
+              : 'send_media';
           if (!hasChatPermission(chatId, selfId, permission)) {
             return ack?.({ ok: false, error: 'You do not have permission to send messages here' });
           }
@@ -811,8 +816,7 @@ export function registerSockets(io: Server) {
         const chat = getChatForUser(chatId, selfId);
         if (!chat) return ack?.({ ok: false, error: 'No such chat' });
         if (isGroupChat(chat)) {
-          const role = chatMemberRole(chatId, selfId);
-          if (role !== 'owner' && role !== 'admin') {
+          if (!hasChatPermission(chatId, selfId, 'pin_messages', 'admin')) {
             return ack?.({ ok: false, error: 'Only admins can pin messages in groups and channels' });
           }
         }

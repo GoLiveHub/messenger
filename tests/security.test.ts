@@ -155,21 +155,61 @@ test('XSS in message text is escaped', async () => {
   }
 });
 
-test('permission matrix — set and get permissions', async () => {
+test('permission matrix — set, get, and enforce permissions', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'perm-test-'));
   const server = await startServer(tempDir);
   try {
     const owner = await register(server.baseUrl, testPhone(), 'Perm Owner');
+    const member = await register(server.baseUrl, testPhone(), 'Perm Member');
     const res = await req(server.baseUrl, '/api/groups', { method: 'POST', body: JSON.stringify({ kind: 'group', title: 'Perm Group' }) }, owner.cookies);
     const chatId = res.body!.chat.chat.id;
 
-    // Set permissions
+    // Add a plain member (owner required by default)
+    const addR = await req(server.baseUrl, `/api/groups/${chatId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ userIds: [member.user.id] }),
+    }, owner.cookies);
+    assert.equal(addR.status, 200);
+
+    // Default permission ('all'): a plain member can send
+    const memberSocket = await connectSocket(server.baseUrl, member.cookies);
+    const happySend = await emitAck(memberSocket, 'message:send', { chatId, text: 'hello', clientId: 'perm-member-1' });
+    assert.equal(happySend.ok, true);
+
+    // Require admin to send -> member send is now denied; owner still allowed
     const setR = await req(server.baseUrl, `/api/groups/${chatId}/permissions`, {
       method: 'PUT',
       body: JSON.stringify({ permissions: [{ permission: 'send_messages', role_required: 'admin' }] }),
     }, owner.cookies);
     assert.equal(setR.status, 200);
     assert.equal(setR.body!.ok, true);
+    const denied = await emitAck(memberSocket, 'message:send', { chatId, text: 'blocked', clientId: 'perm-member-2' });
+    assert.equal(denied.ok, false);
+
+    // add_members defaults to admin: a plain member cannot add another member
+    const other = await register(server.baseUrl, testPhone(), 'Perm Other');
+    const memberAdd = await req(server.baseUrl, `/api/groups/${chatId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ userIds: [other.user.id] }),
+    }, member.cookies);
+    assert.equal(memberAdd.status, 403);
+    const ownerAdd = await req(server.baseUrl, `/api/groups/${chatId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ userIds: [other.user.id] }),
+    }, owner.cookies);
+    assert.equal(ownerAdd.status, 200);
+
+    // change_info defaults to admin: a plain member cannot edit group title
+    const memberEdit = await req(server.baseUrl, `/api/groups/${chatId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title: 'Perm Group v2' }),
+    }, member.cookies);
+    assert.equal(memberEdit.status, 403);
+    const ownerEdit = await req(server.baseUrl, `/api/groups/${chatId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title: 'Perm Group v2' }),
+    }, owner.cookies);
+    assert.equal(ownerEdit.status, 200);
 
     // Get permissions
     const getR = await req(server.baseUrl, `/api/groups/${chatId}/permissions`, {}, owner.cookies);
