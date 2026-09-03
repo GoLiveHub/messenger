@@ -1,4 +1,6 @@
 import type { Server, Socket } from 'socket.io';
+import { isIPv4 } from 'node:net';
+import dns from 'node:dns';
 import { db } from './db.js';
 import { decryptAtRest, encryptAtRest } from './crypto.js';
 import { config } from './config.js';
@@ -53,18 +55,77 @@ function messageMentionsUser(text: unknown, username: string): boolean {
 }
 
 // Dispatch message to bots webhooks registered for chats this bot account is a member of
-function dispatchBotWebhooks(chatId: number, message: Record<string, unknown>): void {
+// --- SSRF-safe outbound webhook helpers ---
+function isPrivateOrReservedIP(ip: string): boolean {
+  const h = ip.toLowerCase();
+  if (isIPv4(h)) {
+    const p = h.split('.').map(Number);
+    if (p[0] === 10 || p[0] === 127 || p[0] === 0) return true;
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+    if (p[0] === 192 && p[1] === 168) return true;
+    if (p[0] === 169 && p[1] === 254) return true;
+    if (p[0] >= 224 && p[0] <= 239) return true;
+    return false;
+  }
+  if (h === '::1' || h === '::') return true;
+  if (h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true;
+  if (h.startsWith('::ffff:')) {
+    const m = h.slice(7);
+    if (isIPv4(m)) return isPrivateOrReservedIP(m);
+  }
+  return true;
+}
+
+function resolveHostSafe(hostname: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    dns.lookup(hostname, { all: true }, (err, addresses) => {
+      if (err || !addresses || addresses.length === 0) { resolve(false); return; }
+      for (const a of addresses) {
+        if (isPrivateOrReservedIP(a.address)) { resolve(false); return; }
+      }
+      resolve(true);
+    });
+  });
+}
+
+async function isSafeWebhookUrl(raw: string): Promise<boolean> {
+  let parsed: URL;
+  try { parsed = new URL(raw); } catch { return false; }
+  if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+  const h = parsed.hostname.toLowerCase();
+  const blocked = ['localhost', '0.0.0.0', '127.0.0.1', '::1', 'metadata.google.internal', '169.254.169.254'];
+  if (blocked.includes(h)) return false;
+  if (isPrivateOrReservedIP(h)) return false;
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return !isPrivateOrReservedIP(h);
+  // DNS-rebinding protection: resolved IPs must be public
+  try { return await resolveHostSafe(h); } catch { return false; }
+}
+
+async function dispatchBotWebhooks(chatId: number, message: Record<string, unknown>): Promise<void> {
   try {
     const bots = db.prepare(`
       SELECT DISTINCT b.* FROM bots b JOIN chat_members cm ON cm.user_id = b.user_id
       WHERE cm.chat_id = ? AND b.is_active = 1 AND b.webhook_url != ''
     `).all(chatId) as Array<{ id: number; webhook_url: string }>;
     for (const bot of bots) {
-      fetch(bot.webhook_url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bot_id: bot.id, chat_id: chatId, message }),
-      }).catch(() => {});
+      try {
+        if (!(await isSafeWebhookUrl(bot.webhook_url))) continue;
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 4000);
+        const resp = await fetch(bot.webhook_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bot_id: bot.id, chat_id: chatId, message }),
+          signal: ctrl.signal,
+          redirect: 'manual',
+        });
+        clearTimeout(timer);
+        // Do not follow redirects to avoid SSRF via Location
+        if (resp.status >= 300 && resp.status < 400) {
+          const loc = resp.headers.get('location');
+          if (loc && !(await isSafeWebhookUrl(new URL(loc, bot.webhook_url).href))) continue;
+        }
+      } catch { /* ignore per-bot dispatch failures */ }
     }
   } catch { /* ignore dispatch failures */ }
 }
@@ -512,7 +573,7 @@ export function registerSockets(io: Server) {
         const shadowBanned = isShadowBanned(selfId);
         if (!shadowBanned) {
           io.to(room(chatId)).emit('message:new', message);
-          dispatchBotWebhooks(chatId, message);
+          dispatchBotWebhooks(chatId, message).catch(() => {});
         }
         ack?.({ ok: true, message });
 

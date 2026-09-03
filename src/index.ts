@@ -3533,14 +3533,21 @@ app.get('/api/link-preview', async (req, res) => {
     if (!await resolveAndCheck(hostname)) return res.json(null);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
-    const resp = await fetch(url, { signal: controller.signal, redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MessengerBot/1.0)' } });
+    const resp = await fetch(url, { signal: controller.signal, redirect: 'manual', headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MessengerBot/1.0)' } });
     clearTimeout(timeout);
     // Reject non-HTML responses and redirects to private IPs
+    if (resp.status >= 300 && resp.status < 400) {
+      const loc = resp.headers.get('location');
+      if (!loc) return res.json(null);
+      const target = new URL(loc, url).href;
+      try {
+        const tParsed = new URL(target);
+        if (!isSafeUrl(target) || !await resolveAndCheck(tParsed.hostname)) return res.json(null);
+      } catch { return res.json(null); }
+      return res.json({ url, title: null, description: null, image: null });
+    }
     const ct = resp.headers.get('content-type') ?? '';
     if (!ct.includes('text/html')) return res.json(null);
-    if (resp.redirected) {
-      try { const rUrl = new URL(resp.url); if (!isSafeUrl(rUrl.href)) return res.json(null); } catch { return res.json(null); }
-    }
     const html = await resp.text();
     const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
     const descMatch = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i)
