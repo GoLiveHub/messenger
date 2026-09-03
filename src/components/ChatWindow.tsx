@@ -3,7 +3,7 @@ import { useApp, store, setMessages, mergeMessage, replacePending, resendMessage
 import { api, type MediaDTO, type User, type Topic } from '../api';
 import { sendMessage, sendTyping, signalRecording, joinChat, sendRead, editMessage, deleteMessage, sendReact, pinMessage } from '../socket';
 import { getE2EKeys } from '../crypto/ensureKeys';
-import { deriveSharedKey, x3dh, encryptSecret, decryptSecret, ratchetStep, encryptFile, decryptFile, generateFileKey, exportFileKey, importFileKey, bytesToBase64, base64ToBytes, type RatchetState } from '../crypto/e2e';
+import { deriveSharedKey, setupSecretSession, ratchetStep, chainKeyToAes, encryptSecret, decryptSecret, encryptFile, decryptFile, generateFileKey, exportFileKey, importFileKey, bytesToBase64, base64ToBytes, type RatchetState } from '../crypto/e2e';
 import { Avatar } from './Avatar';
 import { MediaImage } from './MediaImage';
 import { VoicePlayer } from './VoicePlayer';
@@ -51,8 +51,8 @@ import {
 
 interface SecretSession {
   rootKey: CryptoKey;
-  sendKey: CryptoKey;
-  recvKey: CryptoKey;
+  sendKey: Uint8Array;
+  recvKey: Uint8Array;
   messageNum: number;
   prevChainLen: number;
   skippedKeys: Map<string, CryptoKey>;
@@ -237,6 +237,7 @@ export function ChatWindow() {
   const searchRef = useRef<HTMLInputElement>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const readSentFor = useRef<Set<number>>(new Set());
+  const ownSecretText = useRef<Map<number, { text?: string; fileKey?: string }>>(new Map());
   const fileRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const autosize = (el: HTMLTextAreaElement) => {
@@ -387,50 +388,64 @@ export function ChatWindow() {
       try {
         const keyId = secretKeyId(me.id, activeChatId);
         if (!secretKeys.has(keyId)) {
-          const { privateKey, publicJwk: myPublicJwk } = await getE2EKeys(me.id);
-          // Try X3DH first (needs prekey bundle), fallback to static ECDH
-          try {
-            const bundle = await api.fetchPrekeyBundle(peer.id);
-            const { key: sessionKey } = await x3dh(
-              privateKey,
-              bundle.signed_prekey!.public_jwk,
-              bundle.one_time_prekey?.public_jwk ?? null,
-              bundle.identity_key,
-            );
-            const { chainKey: sendKey } = await ratchetStep(sessionKey);
-            const { chainKey: recvKey } = await ratchetStep(sessionKey);
-            secretKeys.set(keyId, { rootKey: sessionKey, sendKey, recvKey, messageNum: 0, prevChainLen: 0, skippedKeys: new Map() });
-          } catch {
-            // Fallback: prekey bundle not available, use static derivation
-            const sessionKey = await deriveSharedKey(privateKey, peer.e2e_public);
-            const { chainKey: sendKey } = await ratchetStep(sessionKey);
-            const { chainKey: recvKey } = await ratchetStep(sessionKey);
-            secretKeys.set(keyId, { rootKey: sessionKey, sendKey, recvKey, messageNum: 0, prevChainLen: 0, skippedKeys: new Map() });
-          }
+          const { privateKey } = await getE2EKeys(me.id);
+          // Static ECDH root + deterministic role-based KDF chains (see e2e.ts).
+          const sessionKey = await deriveSharedKey(privateKey, peer.e2e_public);
+          const session = await setupSecretSession(sessionKey, me.id, peer.id);
+          secretKeys.set(keyId, { ...session, skippedKeys: new Map() });
         }
         const session = secretKeys.get(keyId)!;
         const list = store.get().messages[activeChatId] ?? [];
-        const entries = await Promise.all(
-          list.map(async (message) => {
-            if (!message.cipher || !message.iv) return [message.id, { text: message.text ?? '' }] as const;
+        // Decrypt received messages in order, advancing the receive chain after
+        // each successful decrypt. Messages we sent ourselves are rendered from
+        // the locally-cached plaintext (they were encrypted with the send chain).
+        const entries: Array<[number, { text: string; fileKey?: string; decryptError?: boolean }]> = [];
+        let recvChain: Uint8Array = new Uint8Array(session.recvKey);
+        const sorted = [...list].sort((a, b) => a.id - b.id);
+        for (const message of sorted) {
+          const own = ownSecretText.current.get(message.id);
+          if (own) {
+            entries.push([message.id, { text: own.text ?? '', fileKey: own.fileKey }]);
+            continue;
+          }
+          if (!message.cipher || !message.iv) {
+            entries.push([message.id, { text: message.text ?? '' }]);
+            continue;
+          }
+          try {
+            const advance = async () => {
+              const { chainKey } = await ratchetStep(recvChain);
+              recvChain = chainKey;
+              return chainKeyToAes(recvChain);
+            };
+            const recvAes = await chainKeyToAes(recvChain);
+            let text = await decryptSecret(recvAes, message.cipher, message.iv);
+            let fileKey: string | undefined;
             try {
-              let text = await decryptSecret(session.recvKey, message.cipher, message.iv);
-              let fileKey: string | undefined;
-              try {
-                const parsed = JSON.parse(text);
-                if (parsed?.e2e_file && parsed.cipher && parsed.iv) {
-                  const fileKeyB64 = await decryptSecret(session.recvKey, parsed.cipher, parsed.iv);
-                  fileKey = fileKeyB64;
-                  text = '';
-                }
-              } catch { /* not a JSON e2e_file message */ }
-              return [message.id, { text, fileKey }] as const;
+              const parsed = JSON.parse(text);
+              if (parsed?.e2e_file && parsed.cipher && parsed.iv) {
+                // Media messages consumed 2 chain slots on the sender side
+                // (one for the file key, one for the JSON wrapper), so the
+                // inner layer decrypts with the *next* chain value.
+                const nextAes = await advance();
+                const fileKeyB64 = await decryptSecret(nextAes, parsed.cipher, parsed.iv);
+                fileKey = fileKeyB64;
+                text = '';
+              } else {
+                await advance();
+              }
             } catch {
-              return [message.id, { text: '', decryptError: true }] as const;
+              await advance();
             }
-          }),
-        );
-        if (!cancelled) setHistory((previous) => ({ ...previous, [activeChatId]: Object.fromEntries(entries) }));
+            entries.push([message.id, { text, fileKey }]);
+          } catch {
+            entries.push([message.id, { text: '', decryptError: true }]);
+          }
+        }
+        if (!cancelled) {
+          secretKeys.set(keyId, { ...session, recvKey: recvChain });
+          setHistory((previous) => ({ ...previous, [activeChatId]: Object.fromEntries(entries) }));
+        }
       } catch {
         if (!cancelled) {
           const list = store.get().messages[activeChatId] ?? [];
@@ -541,12 +556,12 @@ export function ChatWindow() {
       let cipher: string | undefined;
       let iv: string | undefined;
       if (payload.text) {
-        const enc = await encryptSecret(session.sendKey, payload.text);
+        const { chainKey: nextSendKey, messageKey } = await ratchetStep(session.sendKey);
+        const enc = await encryptSecret(messageKey, payload.text);
         cipher = enc.cipher;
         iv = enc.iv;
-        // Advance send ratchet — copy to avoid mutation race with concurrent sends
-        const { chainKey: newSendKey } = await ratchetStep(session.sendKey);
-        const updated = { ...session, sendKey: newSendKey, messageNum: session.messageNum + 1 };
+        // Advance send chain — copy to avoid mutation race with concurrent sends
+        const updated = { ...session, sendKey: nextSendKey, messageNum: session.messageNum + 1 };
         secretKeys.set(secretKeyId(me!.id, activeChatId), updated);
       }
       return sendMessage({
@@ -638,25 +653,13 @@ export function ChatWindow() {
       try {
         const real = await doSend({ text: cText, replyTo: withReply ? replyTo?.id : undefined, clientId: cClientId });
         if (!real) return;
-        replacePending(activeChatId, cTempId, real);
-        if (isSecret) {
-          // Sender-side: try to decrypt via recvKey (may fail until peer replies, which advances the ratchet)
-          const session = secretKeys.get(secretKeyId(me!.id, activeChatId))!;
-          try {
-            const dec = await decryptSecret(session.recvKey, real.cipher!, real.iv!);
-            let fileKey: string | undefined;
-            try {
-              const parsed = JSON.parse(dec);
-              if (parsed?.e2e_file && parsed.cipher && parsed.iv) {
-                const fileKeyB64 = await decryptSecret(session.recvKey, parsed.cipher, parsed.iv);
-                fileKey = fileKeyB64;
-              }
-            } catch { /* not e2e_file */ }
-            setHistory((h) => ({ ...h, [activeChatId]: { ...(h[activeChatId] ?? {}), [real.id]: { text: fileKey ? '' : dec, fileKey } } }));
-          } catch {
-            // Sender can't decrypt own message yet — will show when peer replies
-          }
+        // If this was a real outgoing secret message, cache its plaintext so the
+        // history renderer can show it. (Our own messages are encrypted with the
+        // send chain and cannot be read back through the receive chain.)
+        if (isSecret && real.id && typeof cText === 'string' && cText) {
+          ownSecretText.current.set(real.id, { text: cText });
         }
+        replacePending(activeChatId, cTempId, real);
       } catch {
         failPending(activeChatId, cTempId);
       }
@@ -687,10 +690,9 @@ export function ChatWindow() {
         const fileKey = await generateFileKey();
         const { encrypted, iv } = await encryptFile(fileBuffer, fileKey);
         const fileKeyB64 = await exportFileKey(fileKey);
-        const encKey = await encryptSecret(session.sendKey, fileKeyB64);
-        const { chainKey: newSendKey } = await ratchetStep(session.sendKey);
-        session.sendKey = newSendKey;
-        session.messageNum++;
+        const { chainKey: nextSendKey, messageKey } = await ratchetStep(session.sendKey);
+        const encKey = await encryptSecret(messageKey, fileKeyB64);
+        secretKeys.set(secretKeyId(me.id, activeChatId), { ...session, sendKey: nextSendKey, messageNum: session.messageNum + 1 });
         const { media } = await api.uploadFileWithProgress(
           activeChatId,
           kind,
@@ -1188,10 +1190,9 @@ export function ChatWindow() {
         const fileKey = await generateFileKey();
         const { encrypted, iv } = await encryptFile(fileBuffer, fileKey);
         const fileKeyB64 = await exportFileKey(fileKey);
-        const encKey = await encryptSecret(session.sendKey, fileKeyB64);
-        const { chainKey: newSendKey } = await ratchetStep(session.sendKey);
-        session.sendKey = newSendKey;
-        session.messageNum++;
+        const { chainKey: nextSendKey, messageKey } = await ratchetStep(session.sendKey);
+        const encKey = await encryptSecret(messageKey, fileKeyB64);
+        secretKeys.set(secretKeyId(me.id, activeChatId), { ...session, sendKey: nextSendKey, messageNum: session.messageNum + 1 });
         const { media } = await api.uploadMedia(activeChatId, 'audio', new Blob([encrypted], { type: 'application/octet-stream' }), `e2e_voice_${Date.now()}.webm`, 'application/octet-stream', {
           duration: String(rec.duration ?? 0),
         });

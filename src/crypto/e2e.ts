@@ -11,7 +11,6 @@
 // offloaded to a Web Worker when available, falling back to main thread.
 
 import {
-  workerDeriveSharedKey,
   workerEncrypt,
   workerDecrypt,
   isWorkerAvailable,
@@ -66,15 +65,11 @@ export async function deriveSharedKey(
   privateKey: CryptoKey,
   peerPublicKey: JsonWebKey,
 ): Promise<CryptoKey> {
-  // Try offloading to Web Worker (fast path)
-  if (isWorkerAvailable()) {
-    try {
-      const privateKeyJwk = await crypto.subtle.exportKey('jwk', privateKey);
-      const resultJwk = await workerDeriveSharedKey(privateKeyJwk, peerPublicKey);
-      return await importKey(resultJwk);
-    } catch { /* fall through to main thread */ }
-  }
-  // Main-thread fallback
+  // NOTE: no Web Worker path here. The worker used a different salt/info
+  // ("messenger-e2e-v1" / empty salt) than this function, so depending on
+  // whether a worker was available the two clients derived *different* root
+  // keys and the session never matched. ECDH + one HKDF is microsecond-fast,
+  // so we always derive on the main thread for consistency.
   const peer = await importPublicKey(peerPublicKey);
   const rawSecret = await crypto.subtle.deriveBits(
     { name: 'ECDH', public: peer },
@@ -91,7 +86,7 @@ export async function deriveSharedKey(
     },
     hkdfKey,
     { name: 'AES-GCM', length: 256 },
-    true, // extractable for ratchetStep
+    true, // extractable so we can export the raw root seed below
     ['encrypt', 'decrypt'],
   );
 }
@@ -156,28 +151,100 @@ export async function x3dh(
   return { key, ephemeralPublic: ephemeralPublicJwk };
 }
 
-// ---- Double Ratchet Lite (KDF Chain) ----
+// ---- Secret Chat KDF Chains ----
+//
+// Secret chats use static ECDH for the root key (no X3DH ephemeral transport
+// exists in this app, so the old X3DH path could never converge — both sides
+// generated their *own* ephemeral and never exchanged it, producing different
+// keys). Each client derives the shared root key symmetrically, then splits it
+// into two independent KDF chains (send / recv). Roles are assigned
+// deterministically by user id so both clients build the *same* mapping:
+//   - the user with the LOWER id sends on chain "a"  and receives on chain "b"
+//   - the user with the HIGHER id sends on chain "b" and receives on chain "a"
+// This makes A's send chain equal to B's receive chain, and vice versa.
+//
+// Chain values are kept as raw 32-byte arrays (NOT opaque CryptoKeys) so the
+// ratchet never needs exportKey() and cannot hit "key is not extractable".
+// Each KDF step derives the next chain value and the per-message AES key.
 
 export interface RatchetState {
   rootKey: CryptoKey;
-  sendKey: CryptoKey;
-  recvKey: CryptoKey;
-  messageNum: number;
+  sendKey: Uint8Array; // raw 32-byte current send-chain value
+  recvKey: Uint8Array; // raw 32-byte current receive-chain value
+  messageNum: number; // total messages sent (used for display/tests)
   prevChainLen: number;
-  // Skipped message keys for out-of-order decryption
-  skippedKeys: Map<string, CryptoKey>; // key: `${ratchetPublicKey}:${messageNum}`
+  skippedKeys: Map<string, CryptoKey>;
+}
+
+// Derive a 32-byte chain seed from the root raw key material + a domain label.
+async function chainSeed(rootRaw: Uint8Array, domain: string): Promise<Uint8Array> {
+  const hkdfKey = await crypto.subtle.importKey('raw', rootRaw as Uint8Array<ArrayBuffer>, 'HKDF', false, ['deriveBits']);
+  const info = new TextEncoder().encode(`messenger-chain-${domain}-v1`);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: new TextEncoder().encode('messenger-secret-chat-v1'), info },
+    hkdfKey,
+    256,
+  );
+  return new Uint8Array(bits);
+}
+
+// Build a session from the symmetric root key. Both sides call this and get an
+// identical, correctly-role-assigned session.
+export async function setupSecretSession(
+  rootKey: CryptoKey,
+  myId: number,
+  peerId: number,
+): Promise<RatchetState> {
+  const rootRaw = new Uint8Array(await crypto.subtle.exportKey('raw', rootKey));
+  const seedA = await chainSeed(rootRaw, 'a');
+  const seedB = await chainSeed(rootRaw, 'b');
+  const iAmLower = myId < peerId;
+  return {
+    rootKey,
+    sendKey: iAmLower ? seedA : seedB,
+    recvKey: iAmLower ? seedB : seedA,
+    messageNum: 0,
+    prevChainLen: 0,
+    skippedKeys: new Map(),
+  };
 }
 
 export function createEmptyRatchet(): RatchetState {
-  // Placeholder - must be properly initialized via X3DH
-  throw new Error('Use x3dh() to initialize ratchet');
+  throw new Error('Use setupSecretSession() to initialize a secret session');
+}
+
+// Advance a chain: returns the next chain value and the AES key for the
+// *current* chain value (the message is encrypted with the key being consumed).
+export async function ratchetStep(
+  currentChain: Uint8Array,
+): Promise<{ chainKey: Uint8Array; messageKey: CryptoKey }> {
+  const next = new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array([...currentChain, 0x01])));
+  const messageKey = await crypto.subtle.importKey(
+    'raw',
+    currentChain as Uint8Array<ArrayBuffer>,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+  return { chainKey: next, messageKey };
+}
+
+// Import a raw chain value into an AES key (for the receive direction, where we
+// don't step the chain until the message key has been used).
+export async function chainKeyToAes(raw: Uint8Array): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    'raw',
+    raw as Uint8Array<ArrayBuffer>,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
 }
 
 // Save a skipped message key so out-of-order messages can still be decrypted.
-export function saveSkippedKey(state: RatchetState, ratchetPublicB64: string, msgNum: number, key: CryptoKey): RatchetState {
+export function saveSkippedKey(state: RatchetState, chain: string, msgNum: number, key: CryptoKey): RatchetState {
   const map = new Map(state.skippedKeys);
-  map.set(`${ratchetPublicB64}:${msgNum}`, key);
-  // Limit skipped keys to 1000 to prevent memory bloat
+  map.set(`raw:${chain}:${msgNum}`, key);
   if (map.size > 1000) {
     const keys = Array.from(map.keys());
     for (let i = 0; i < 200; i++) map.delete(keys[i]);
@@ -185,94 +252,18 @@ export function saveSkippedKey(state: RatchetState, ratchetPublicB64: string, ms
   return { ...state, skippedKeys: map };
 }
 
-// Try to find a skipped key for decryption.
-export function getSkippedKey(state: RatchetState, ratchetPublicB64: string, msgNum: number): CryptoKey | undefined {
-  return state.skippedKeys.get(`${ratchetPublicB64}:${msgNum}`);
+export function getSkippedKey(state: RatchetState, chain: string, msgNum: number): CryptoKey | undefined {
+  return state.skippedKeys.get(`raw:${chain}:${msgNum}`);
 }
 
-// Remove a consumed skipped key.
-export function removeSkippedKey(state: RatchetState, ratchetPublicB64: string, msgNum: number): RatchetState {
+export function removeSkippedKey(state: RatchetState, chain: string, msgNum: number): RatchetState {
   const map = new Map(state.skippedKeys);
-  map.delete(`${ratchetPublicB64}:${msgNum}`);
+  map.delete(`raw:${chain}:${msgNum}`);
   return { ...state, skippedKeys: map };
 }
 
 export function ratchetStateToBytes(state: RatchetState): string {
-  // We need to serialize by exporting keys, but since CryptoKey is opaque in browser,
-  // we keep the raw state as JSON with key references. In practice the state is
-  // kept in memory / indexedDB and never directly serialized to wire.
   return JSON.stringify({ messageNum: state.messageNum, prevChainLen: state.prevChainLen });
-}
-
-async function kdfChain(key: CryptoKey, inputKeyMaterial: ArrayBuffer): Promise<{ chainKey: CryptoKey; messageKey: CryptoKey }> {
-  const hkdfKey = await crypto.subtle.importKey('raw', inputKeyMaterial, 'HKDF', false, ['deriveKey']);
-  const chainKey = await crypto.subtle.deriveKey(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: new Uint8Array(32),
-      info: new TextEncoder().encode('ratchet-chain-key'),
-    },
-    hkdfKey,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt'],
-  );
-  const messageKey = await crypto.subtle.deriveKey(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: new Uint8Array(32),
-      info: new TextEncoder().encode('ratchet-message-key'),
-    },
-    hkdfKey,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt'],
-  );
-  return { chainKey, messageKey };
-}
-
-export async function ratchetStep(
-  currentChainKey: CryptoKey,
-): Promise<{ chainKey: CryptoKey; messageKey: CryptoKey }> {
-  const raw = await crypto.subtle.exportKey('raw', currentChainKey);
-  const chainBytes = new Uint8Array(raw);
-  const msgKeyData = new Uint8Array([...chainBytes, 0x01]);
-  const nextChainData = new Uint8Array([...chainBytes, 0x02]);
-  const msgKeyRaw = await crypto.subtle.digest('SHA-256', msgKeyData);
-  const nextChainRaw = await crypto.subtle.digest('SHA-256', nextChainData);
-
-  const messageKey = await crypto.subtle.importKey('raw', msgKeyRaw, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-  const newChainKey = await crypto.subtle.importKey('raw', nextChainRaw, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-  return { chainKey: newChainKey, messageKey };
-}
-
-export async function dhRatchet(
-  state: RatchetState,
-  myEphemeralPrivate: CryptoKey,
-  peerEphemeralPublic: JsonWebKey,
-): Promise<RatchetState> {
-  const dhOutput = await ecdhDeriveBits(myEphemeralPrivate, peerEphemeralPublic);
-  const hkdfKey = await crypto.subtle.importKey('raw', dhOutput, 'HKDF', false, ['deriveKey']);
-
-  const newRootRaw = await crypto.subtle.deriveKey(
-    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: new TextEncoder().encode('ratchet-dh-root') },
-    hkdfKey,
-    { name: 'AES-GCM', length: 256 },
-    true, // extractable so ratchetStep can export it
-    ['encrypt', 'decrypt'],
-  );
-  const { chainKey: sendKey } = await ratchetStep(newRootRaw);
-
-  return {
-    rootKey: newRootRaw,
-    sendKey,
-    recvKey: state.recvKey,
-    messageNum: 0,
-    prevChainLen: state.prevChainLen + state.messageNum,
-    skippedKeys: state.skippedKeys,
-  };
 }
 
 // ---- Encryption / Decryption with per-message keys ----
