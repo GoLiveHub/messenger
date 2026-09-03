@@ -31,51 +31,61 @@ export async function sendWebPush(
     const body = JSON.stringify(payload);
     const bodyBuffer = Buffer.from(body);
 
-    // Generate ephemeral ECDH key pair on P-256 curve
-    const ephemeral = crypto.createECDH('prime256v1');
-    const ephemeralPubRaw = Buffer.from(ephemeral.generateKeys());
+    // ---- RFC 8291 + RFC 8188 (aes128gcm) correct implementation ----
 
-    // Derive shared secret via ECDH
+    // Ephemeral sender ECDH key on P-256 (65-byte uncompressed point).
+    const ephemeral = crypto.createECDH('prime256v1');
+    const ephPubRaw = Buffer.from(ephemeral.generateKeys());
     const peerPubRaw = Buffer.from(p256dh, 'base64');
+    if (peerPubRaw.length !== 65) throw new Error('Invalid p256dh (expected 65-byte uncompressed point)');
     const sharedSecret = Buffer.from(ephemeral.computeSecret(peerPubRaw));
 
-    // Derive encryption keys (RFC 8291 simplified)
     const authSecret = Buffer.from(auth, 'base64');
+    if (authSecret.length !== 16) throw new Error('Invalid auth secret (expected 16 bytes)');
     const salt = crypto.randomBytes(16);
 
-    // prk = HKDF(authSecret, sharedSecret, "WebPush: info" || u8(0) || u8(32) || clientPublicKey, 32)
-    const ikmInput = Buffer.concat([
-      Buffer.from('WebPush: info\u0000\u0020'),
-      Buffer.from(p256dh, 'base64'),
-    ]);
-    const prk = hkdf(authSecret, sharedSecret, ikmInput, 32);
-    const ikm = hkdf(salt, prk, Buffer.from('aes128gcm'), 32);
-    const keyParam = hkdf(salt, prk, Buffer.from('aes128gcm'), 16);
+    // PRK = HKDF-Extract(salt = auth_secret, ikm = shared_secret)
+    const prk = hkdfExtract(authSecret, sharedSecret);
 
-    // Pad and encrypt: content || random(16)
-    const record = Buffer.concat([bodyBuffer, crypto.randomBytes(16)]);
-    const cipher = crypto.createCipheriv('aes-256-gcm', ikm, salt);
-    cipher.setAAD(keyParam);
+    // CEK (16 bytes) = HKDF-Expand(PRK, "Content-Encoding: aes128gcm"||0x00||u32||ua_public, 16)
+    const ephLen = Buffer.alloc(4);
+    ephLen.writeUInt32BE(ephPubRaw.length, 0);
+    const cekInfo = Buffer.concat([Buffer.from('Content-Encoding: aes128gcm\0'), ephLen, ephPubRaw]);
+    const cek = hkdfExpand(prk, cekInfo, 16);
+
+    // nonce (12 bytes) = HKDF-Expand(PRK, "Content-Encoding: nonce"||0x00||u32||ua_public, 12)
+    const nonceInfo = Buffer.concat([Buffer.from('Content-Encoding: nonce\0'), ephLen, ephPubRaw]);
+    const nonce = hkdfExpand(prk, nonceInfo, 12);
+
+    // Record size 4096; single record with padding to rs-16.
+    const rs = 4096;
+    const recordPlainLen = rs - 16; // 4080 (reserve 16-byte GCM tag per record)
+    if (bodyBuffer.length + 1 > recordPlainLen) throw new Error('Payload too large for Web Push (max ~4 KB)');
+    const record = Buffer.alloc(recordPlainLen, 0);
+    bodyBuffer.copy(record, 0);
+    record[bodyBuffer.length] = 0x02; // record delimiter, then zero padding
+
+    // aes128gcm header: salt(16) || rs(4 BE) || idlen(1)=0x00 (no keyid for Web Push)
+    const rsBuf = Buffer.alloc(4);
+    rsBuf.writeUInt32BE(rs, 0);
+    const header = Buffer.concat([salt, rsBuf, Buffer.from([0x00])]);
+
+    // AAD is the aes128gcm header itself.
+    const cipher = crypto.createCipheriv('aes-128-gcm', cek, nonce);
+    cipher.setAAD(header);
     const encrypted = Buffer.concat([cipher.update(record), cipher.final()]);
     const tag = cipher.getAuthTag();
 
-    // aes128gcm payload: salt(16) + rs(4)=0x1000 + idlen(1)=0x01 + keyid(keyParam,16) + tag(16) + ciphertext
-    const aes128gcmPayload = Buffer.concat([
-      salt,
-      Buffer.from([0x00, 0x00, 0x10, 0x00]), // rs = 4096
-      Buffer.from([0x01]),                     // keyid length
-      keyParam,
-      tag,
-      encrypted,
-    ]);
+    const aes128gcmPayload = Buffer.concat([header, encrypted, tag]);
 
-    // Generate VAPID authorization header
     const vapidHeaders = getVapidAuthHeader(endpoint);
 
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: {
         ...VAPID_headers,
+        'Content-Encoding': 'aes128gcm',
+        'Content-Length': String(aes128gcmPayload.length),
         Authorization: vapidHeaders,
       },
       body: aes128gcmPayload,
@@ -115,19 +125,29 @@ export async function sendPushToUser(
   }
 }
 
-function hkdf(salt: Buffer, ikm: Buffer, info: Buffer, length: number): Buffer {
-  const prk = crypto.createHmac('sha256', salt).update(ikm).digest();
-  const infoHash = crypto.createHmac('sha256', prk).update(info).digest();
-  const result = Buffer.alloc(length);
-  let prev = infoHash;
-  let offset = 0;
-  while (offset < length) {
-    const next = crypto.createHmac('sha256', prk).update(Buffer.concat([prev, Buffer.from([0x01])])).digest();
-    next.copy(result, offset, 0, Math.min(next.length, length - offset));
-    offset += next.length;
-    prev = next;
+// HKDF-Extract: PRK = HMAC-SHA256(salt, ikm). RFC 5869.
+function hkdfExtract(salt: Buffer, ikm: Buffer): Buffer {
+  return crypto.createHmac('sha256', salt).update(ikm).digest();
+}
+
+// HKDF-Expand: RFC 5869.
+function hkdfExpand(prk: Buffer, info: Buffer, length: number): Buffer {
+  const output = Buffer.alloc(length);
+  let produced = 0;
+  let t = Buffer.alloc(0);
+  let counter = 1;
+  while (produced < length) {
+    const hmac = crypto.createHmac('sha256', prk);
+    if (t.length > 0) hmac.update(t);
+    hmac.update(info);
+    hmac.update(Buffer.from([counter]));
+    t = hmac.digest();
+    const needed = Math.min(t.length, length - produced);
+    t.copy(output, produced, 0, needed);
+    produced += t.length;
+    counter += 1;
   }
-  return result;
+  return output;
 }
 
 function getVapidAuthHeader(endpoint: string): string {
