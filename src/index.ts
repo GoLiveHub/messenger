@@ -53,6 +53,7 @@ import {
   isAdmin,
   getMessageReactions,
   reactionGroups,
+  senderUserDTO,
 } from './helpers.js';
 import { db } from './db.js';
 import { decryptAtRest, encryptAtRest, generateCode, hashPassword, sha256Hex, verifyPassword, randomToken } from './crypto.js';
@@ -3570,18 +3571,43 @@ app.use(((error, _req, res, _next) => {
 // --- scheduled message sender (check every 15s) ---
 setInterval(() => {
   try {
-    const pending = db.prepare(`SELECT * FROM scheduled_messages WHERE sent = 0 AND scheduled_at <= datetime('now')`).all() as any[];
+    const pending = db.prepare(`SELECT * FROM scheduled_messages WHERE sent = 0 AND scheduled_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')`).all() as any[];
     for (const sm of pending) {
       try {
         if (!getChatForUser(sm.chat_id, sm.user_id)) { db.prepare('UPDATE scheduled_messages SET sent = 1 WHERE id = ?').run(sm.id); continue; }
         db.prepare('UPDATE scheduled_messages SET sent = 1 WHERE id = ?').run(sm.id);
+        const nowIso = new Date().toISOString();
         const enc = encryptAtRest(sm.body ?? '');
-        db.prepare('INSERT INTO messages (chat_id, sender_id, body, iv, media_id, reply_to) VALUES (?, ?, ?, ?, ?, ?)').run(sm.chat_id, sm.user_id, enc.body, enc.iv, sm.media_id, sm.reply_to);
-        const row = db.prepare('SELECT * FROM messages WHERE chat_id = ? AND deleted = 0 ORDER BY id DESC LIMIT 1').get(sm.chat_id) as any;
-        if (row) {
-          io.to(`chat:${sm.chat_id}`).emit('message:new', { chatId: sm.chat_id, messageId: row.id });
-          try { db.prepare("UPDATE chats SET last_message_at = datetime('now') WHERE id = ?").run(sm.chat_id); } catch { /* ignore */ }
-        }
+        const media = sm.media_id ? getMediaById(Number(sm.media_id)) : null;
+        const hashtags = Array.isArray(sm.hashtags) ? sm.hashtags : [];
+        const text = sm.body ?? '';
+        const insertRes = db.prepare('INSERT INTO messages (chat_id, sender_id, body, iv, media_id, reply_to, delivered_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(sm.chat_id, sm.user_id, enc.body, enc.iv, sm.media_id || null, sm.reply_to || null, nowIso, nowIso);
+        const message = {
+          id: Number(insertRes.lastInsertRowid),
+          chat_id: sm.chat_id,
+          sender_id: sm.user_id,
+          client_id: null,
+          sender_user: senderUserDTO(Number(sm.user_id)),
+          created_at: nowIso,
+          delivered_at: nowIso,
+          read_at: null,
+          text,
+          expires_at: null,
+          media: media ? serializeMedia(media) : null,
+          reply_to: sm.reply_to ? Number(sm.reply_to) : null,
+          thread_id: null,
+          topic_id: null,
+          hashtags,
+          forwarded_from: null,
+          reactions: [],
+        };
+        try {
+          db.prepare('INSERT INTO messages_fts (rowid, chat_id, sender_id, text_content, created_at) VALUES (?, ?, ?, ?, ?)')
+            .run(message.id, sm.chat_id, sm.user_id, text, nowIso);
+        } catch { /* ignore FTS errors */ }
+        io.to(`chat:${sm.chat_id}`).emit('message:new', message);
+        try { db.prepare("UPDATE chats SET last_message_at = datetime('now') WHERE id = ?").run(sm.chat_id); } catch { /* ignore */ }
         log.suspicious('scheduled_message_sent', { userId: sm.user_id, chatId: sm.chat_id, smId: sm.id });
       } catch (e) {
         log.error('failed to send scheduled message', { smId: sm.id, error: String(e) });
