@@ -497,7 +497,9 @@ export function registerSockets(io: Server) {
             if (body && iv) {
               ftsText = _decryptAtRest(Buffer.from(body as Uint8Array), Buffer.from(iv as Uint8Array)).toString('utf8');
             }
-            db.prepare('INSERT INTO messages_fts (chat_id, sender_id, text_content, created_at) VALUES (?, ?, ?, ?)').run(chatId, selfId, ftsText, message.created_at);
+            // FTS rowid must equal messages.id so that search joins
+            // (m.id = f.rowid), deletes and edits can target the right row.
+            db.prepare('INSERT INTO messages_fts (rowid, chat_id, sender_id, text_content, created_at) VALUES (?, ?, ?, ?, ?)').run(message.id, chatId, selfId, ftsText, message.created_at);
           } catch { /* ignore FTS errors */ }
         }
 
@@ -691,6 +693,8 @@ export function registerSockets(io: Server) {
           new Date().toISOString(),
           messageId,
         );
+        // Keep the FTS index in sync with edits.
+        try { db.prepare('UPDATE messages_fts SET text_content = ? WHERE rowid = ?').run(text, messageId); } catch { /* ignore FTS errors */ }
         io.to(room(chatId)).emit('message:edited', { chatId, messageId, text });
         ack?.({ ok: true });
       } catch (e) {
@@ -1125,6 +1129,7 @@ export function getChatMessages(chatId: number, selfId: number, offset = 0, limi
       const expiry = new Date(r.expires_at).getTime();
       if (expiry <= now) {
         db.prepare('UPDATE messages SET deleted = 1, body = NULL, iv = NULL WHERE id = ?').run(r.id);
+        try { db.prepare('DELETE FROM messages_fts WHERE rowid = ?').run(r.id); } catch { /* FTS may not have entry */ }
         r.deleted = 1; // mark so it's excluded from results
       }
     }

@@ -2014,6 +2014,7 @@ app.delete('/api/chats/:id/messages', (req, res) => {
     }
   }
   db.prepare('UPDATE messages SET deleted = 1, body = NULL, iv = NULL WHERE chat_id = ?').run(chatId);
+  try { db.prepare('DELETE FROM messages_fts WHERE chat_id = ?').run(chatId); } catch { /* FTS may not have entries */ }
   db.prepare('UPDATE chats SET pinned_id = NULL WHERE id = ?').run(chatId);
   io.to(roomName(chatId)).emit('history:cleared', { chatId });
   res.json({ ok: true });
@@ -2039,8 +2040,8 @@ app.get('/api/chats/:id/search', (req, res) => {
       let sql = `SELECT rowid, chat_id, sender_id, text_content, created_at FROM messages_fts WHERE messages_fts MATCH ? AND chat_id = ?`;
       const params: any[] = [ftsQuery, chatId];
       if (before) {
-        sql = `SELECT f.rowid, f.chat_id, f.sender_id, f.text_content, f.created_at FROM messages_fts f JOIN messages m ON m.id = f.rowid WHERE messages_fts MATCH ? AND f.chat_id = ? AND f.rowid < ?`;
-        params.splice(1, 0, before);
+        sql = `SELECT f.rowid, f.chat_id, f.sender_id, f.text_content, f.created_at FROM messages_fts f JOIN messages m ON m.id = f.rowid WHERE messages_fts MATCH ? AND f.chat_id = ? AND f.rowid < ? AND m.deleted = 0`;
+        params.push(before);
       }
       sql += ' ORDER BY f.rowid DESC LIMIT ?';
       params.push(limit + 1);
