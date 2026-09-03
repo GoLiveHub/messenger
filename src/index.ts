@@ -2339,21 +2339,46 @@ app.post('/api/media', upload.single('file'), async (req, res) => {
 });
 
 // --- resumable upload (chunked) ---
-const uploadSessions = new Map<string, { chunks: Buffer[]; totalChunks: number; meta: Record<string, string>; startedAt: number }>();
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024; // 8 MB aggregate per upload (memory DoS guard)
+const MAX_TOTAL_CHUNKS = 10_000;
 
-// --- resumable upload (chunked) ---
+interface UploadSession {
+  chunks: (Buffer | null)[]; // dense, indexed by chunkIndex
+  totalChunks: number;
+  receivedCount: number;
+  receivedBytes: number;
+  seen: Set<number>;
+  meta: Record<string, string>;
+  startedAt: number;
+}
+
+const uploadSessions = new Map<string, UploadSession>();
+
 app.post('/api/media/upload-init', (req, res) => {
   const selfId = (req as any).userId;
   // Per-user upload session limit (prevent memory DoS)
   const userSessions = [...uploadSessions.keys()].filter((k) => k.startsWith(`u_${selfId}_`)).length;
   if (userSessions >= 5) return res.status(429).json({ error: 'Too many upload sessions. Wait for existing uploads to finish.' });
   const { chatId, kind, name, mime, totalChunks, size } = req.body ?? {};
-  if (!chatId || !totalChunks) return res.status(400).json({ error: 'Missing fields' });
+  if (!chatId) return res.status(400).json({ error: 'Missing fields' });
+  // Validate chunk count (positive integer, bounded to prevent sparse-array abuse)
+  const nChunks = Number(totalChunks);
+  if (!Number.isInteger(nChunks) || nChunks <= 0 || nChunks > MAX_TOTAL_CHUNKS) {
+    return res.status(400).json({ error: `Invalid totalChunks (must be 1-${MAX_TOTAL_CHUNKS})` });
+  }
+  // Validate declared size (finite, bounded)
+  const nSize = Number(size ?? 0);
+  if (!Number.isFinite(nSize) || nSize < 0 || nSize > MAX_UPLOAD_BYTES) {
+    return res.status(400).json({ error: `File too large (max ${MAX_UPLOAD_BYTES} bytes)` });
+  }
   const uploadId = `u_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   uploadSessions.set(uploadId, {
-    chunks: [],
-    totalChunks: Number(totalChunks),
-    meta: { chatId: String(chatId), kind: String(kind ?? 'file'), name: String(name ?? 'file'), mime: String(mime ?? 'application/octet-stream'), size: String(size ?? 0), senderId: String(selfId) },
+    chunks: new Array<Buffer | null>(nChunks).fill(null),
+    totalChunks: nChunks,
+    receivedCount: 0,
+    receivedBytes: 0,
+    seen: new Set(),
+    meta: { chatId: String(chatId), kind: String(kind ?? 'file'), name: String(name ?? 'file'), mime: String(mime ?? 'application/octet-stream'), size: String(nSize), senderId: String(selfId) },
     startedAt: Date.now(),
   });
   // Clean up old sessions (>30 min)
@@ -2368,8 +2393,21 @@ app.post('/api/media/upload-chunk', upload.single('chunk'), (req, res) => {
   const session = uploadSessions.get(uploadId);
   if (!session) return res.status(404).json({ error: 'Upload session not found' });
   if (!req.file?.buffer) return res.status(400).json({ error: 'No chunk data' });
-  session.chunks[Number(chunkIndex)] = req.file.buffer;
-  res.json({ ok: true, received: session.chunks.filter(Boolean).length, total: session.totalChunks });
+  const idx = Number(chunkIndex);
+  // Validate chunk index is an in-range integer (prevents sparse-array / out-of-bounds abuse)
+  if (!Number.isInteger(idx) || idx < 0 || idx >= session.totalChunks) {
+    return res.status(400).json({ error: `Invalid chunkIndex (0-${session.totalChunks - 1})` });
+  }
+  if (session.seen.has(idx)) return res.status(409).json({ error: 'Duplicate chunk' });
+  // Enforce aggregate byte limit incrementally so memory cannot exceed the cap
+  if (session.receivedBytes + req.file.buffer.length > MAX_UPLOAD_BYTES) {
+    return res.status(413).json({ error: 'Upload exceeds size limit' });
+  }
+  session.chunks[idx] = req.file.buffer;
+  session.receivedBytes += req.file.buffer.length;
+  session.receivedCount += 1;
+  session.seen.add(idx);
+  res.json({ ok: true, received: session.receivedCount, total: session.totalChunks });
 });
 
 app.post('/api/media/upload-finalize', async (req, res) => {
@@ -2377,13 +2415,19 @@ app.post('/api/media/upload-finalize', async (req, res) => {
   const { uploadId } = req.body ?? {};
   const session = uploadSessions.get(uploadId);
   if (!session) return res.status(404).json({ error: 'Upload session not found' });
+  // Require every chunk to have arrived before assembling (dense, no gaps).
+  if (session.receivedCount !== session.totalChunks) {
+    return res.status(400).json({ error: `Incomplete upload (${session.receivedCount}/${session.totalChunks})` });
+  }
   uploadSessions.delete(uploadId);
 
-  // Concatenate chunks
-  const totalLen = session.chunks.reduce((s, c) => s + (c?.length ?? 0), 0);
+  // Concatenate chunks densely (no sparse iteration / leading-null scans).
+  let totalLen = 0;
+  for (let i = 0; i < session.chunks.length; i++) totalLen += (session.chunks[i]?.length ?? 0);
   const combined = Buffer.alloc(totalLen);
   let offset = 0;
-  for (const chunk of session.chunks) {
+  for (let i = 0; i < session.chunks.length; i++) {
+    const chunk = session.chunks[i];
     if (chunk) { chunk.copy(combined, offset); offset += chunk.length; }
   }
 
