@@ -55,8 +55,6 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
   const ref = useFocusTrap(true);
   useEscapeKey(onClose);
 
-  if (!me?.is_admin) return null;
-
   const loadReports = () => api.getAdminReports(reportFilter).then(setReports).catch(() => {});
   const loadUsers = () => api.getAdminUsers(userQuery).then(setUsers).catch(() => {});
   const loadBans = () => api.getAdminBans().then(setBans).catch(() => {});
@@ -66,6 +64,8 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
     else if (tab === 'users') loadUsers();
     else loadBans();
   }, [tab, reportFilter, userQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!me?.is_admin) return null;
 
   const handleReview = async (id: number, status: 'reviewed' | 'dismissed') => {
     try { await api.reviewReport(id, status); } catch { /* ignore */ }

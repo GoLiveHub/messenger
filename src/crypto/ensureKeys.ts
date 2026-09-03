@@ -6,6 +6,20 @@ function storeId(userId: number): string {
   return `e2e-keys:${userId}`;
 }
 
+let keysDbPromise: Promise<IDBDatabase> | null = null;
+function openKeysDb(): Promise<IDBDatabase> {
+  if (keysDbPromise) return keysDbPromise;
+  keysDbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open('messenger-keys', 1);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains('keys')) req.result.createObjectStore('keys', { keyPath: 'id' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => { keysDbPromise = null; reject(req.error); };
+  });
+  return keysDbPromise;
+}
+
 async function idbGet(userId: number): Promise<{
   privateKey: CryptoKey;
   publicJwk: JsonWebKey;
@@ -14,32 +28,22 @@ async function idbGet(userId: number): Promise<{
   prekeyCounter?: number;
   prekeyCreatedAt?: number;
 } | null> {
+  const db = await openKeysDb();
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('messenger-keys', 1);
-    req.onupgradeneeded = () => req.result.createObjectStore('keys', { keyPath: 'id' });
-    req.onsuccess = () => {
-      const db = req.result;
-      const tx = db.transaction('keys', 'readonly');
-      const get = tx.objectStore('keys').get(storeId(userId));
-      get.onsuccess = () => resolve(get.result ?? null);
-      get.onerror = () => reject(get.error);
-    };
-    req.onerror = () => reject(req.error);
+    const tx = db.transaction('keys', 'readonly');
+    const get = tx.objectStore('keys').get(storeId(userId));
+    get.onsuccess = () => resolve(get.result ?? null);
+    get.onerror = () => reject(get.error);
   });
 }
 
 async function idbPut(userId: number, value: unknown): Promise<void> {
+  const db = await openKeysDb();
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('messenger-keys', 1);
-    req.onupgradeneeded = () => req.result.createObjectStore('keys', { keyPath: 'id' });
-    req.onsuccess = () => {
-      const db = req.result;
-      const tx = db.transaction('keys', 'readwrite');
-      tx.objectStore('keys').put({ id: storeId(userId), ...(value as object) });
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    };
-    req.onerror = () => reject(req.error);
+    const tx = db.transaction('keys', 'readwrite');
+    tx.objectStore('keys').put({ id: storeId(userId), ...(value as object) });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 }
 

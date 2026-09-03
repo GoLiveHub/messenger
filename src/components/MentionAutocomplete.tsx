@@ -22,7 +22,7 @@ export function MentionAutocomplete({ chatId, query, onSelect, onClose }: Props)
     if (!query) { setUsers([]); return; }
     let cancelled = false;
     const searchFn = chatId
-      ? fetch(`/api/chats/${chatId}/members/search?q=${encodeURIComponent(query)}`).then((r) => r.json()).catch(() => [])
+      ? fetch(`/api/chats/${chatId}/members/search?q=${encodeURIComponent(query)}`, { credentials: 'include' }).then((r) => r.json()).catch(() => [])
       : api.searchUsers(query).then((r) => r.slice(0, 8)).catch(() => []);
     searchFn.then((res) => {
       if (!cancelled) setUsers(res);

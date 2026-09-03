@@ -4,8 +4,11 @@
 const DB_NAME = 'messenger-cache';
 const DB_VERSION = 1;
 
+let cachedDbPromise: Promise<IDBDatabase> | null = null;
+
 function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (cachedDbPromise) return cachedDbPromise;
+  cachedDbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
@@ -16,8 +19,10 @@ function openDb(): Promise<IDBDatabase> {
       }
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onerror = () => { cachedDbPromise = null; reject(req.error); };
+    req.onblocked = () => { /* keep the promise open; upgrade can retry */ };
   });
+  return cachedDbPromise;
 }
 
 async function tx<T>(

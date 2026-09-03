@@ -254,7 +254,11 @@ export function ChatWindow() {
     state: 'idle',
     seconds: 0,
   });
-  const recorderRef = useRef<{ mediaRecorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; analyser?: AnalyserNode; rafId?: number } | null>(null);
+  const recorderRef = useRef<{ mediaRecorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; analyser?: AnalyserNode; rafId?: number; audioCtx?: AudioContext } | null>(null);
+  const closeRecAudioCtx = () => {
+    const ctx = recorderRef.current?.audioCtx;
+    if (ctx && ctx.state !== 'closed') { void ctx.close().catch(() => {}); recorderRef.current!.audioCtx = undefined; }
+  };
   const recTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const [liveWaveform, setLiveWaveform] = useState<number[]>(new Array(24).fill(0));
   const recSwipeRef = useRef<{ startX: number; currentX: number } | null>(null);
@@ -512,6 +516,7 @@ export function ChatWindow() {
 
   useEffect(() => () => {
     if (typingTimer.current) clearTimeout(typingTimer.current);
+    closeRecAudioCtx();
     recorderRef.current?.stream.getTracks().forEach((tr) => tr.stop());
     if (recTimerRef.current) clearInterval(recTimerRef.current);
   }, []);
@@ -1096,6 +1101,7 @@ export function ChatWindow() {
       mediaRecorder.onstop = () => {
         const blob = new Blob(chunks, { type: mime || 'audio/webm' });
         if (recorderRef.current?.rafId) cancelAnimationFrame(recorderRef.current.rafId);
+        closeRecAudioCtx();
         stream.getTracks().forEach((tr) => tr.stop());
         setRec((r) => ({ ...r, state: 'stopped', blob, duration: r.seconds }));
         setLiveWaveform(new Array(24).fill(0));
@@ -1123,7 +1129,7 @@ export function ChatWindow() {
         if (recorderRef.current) recorderRef.current.rafId = id;
       };
       const rafId = requestAnimationFrame(drawWaveform);
-      recorderRef.current = { mediaRecorder, stream, chunks, analyser, rafId };
+      recorderRef.current = { mediaRecorder, stream, chunks, analyser, rafId, audioCtx };
       setRec({ state: 'recording', seconds: 0 });
       if (activeChatId) signalRecording(activeChatId, true);
       recTimerRef.current = setInterval(() => {
@@ -1149,6 +1155,7 @@ export function ChatWindow() {
 
   const cancelRecording = () => {
     if (recorderRef.current?.rafId) cancelAnimationFrame(recorderRef.current.rafId);
+    closeRecAudioCtx();
     recorderRef.current?.stream.getTracks().forEach((tr) => tr.stop());
     recorderRef.current = null;
     if (recTimerRef.current) clearInterval(recTimerRef.current);
@@ -1601,7 +1608,9 @@ export function ChatWindow() {
               onEditHistory={async (messageId: number) => {
                 try {
                   const resp = await fetch(`/api/messages/${messageId}/history`, { credentials: 'include' });
+                  if (!resp.ok) return;
                   const data = await resp.json();
+                  if (!Array.isArray(data)) return;
                   setEditHistoryOpen({ messageId, history: data });
                 } catch { /* ignore */ }
               }}
@@ -2209,7 +2218,7 @@ function MessageRowInner(props: {
         </div>
       )}
       {allMsgs.filter((m) => m.thread_id === msg.id).length > 0 && (
-        <button className="thread-count-btn" onClick={(e) => { e.stopPropagation(); /* handled by parent */ }}>
+        <button className="thread-count-btn" onClick={(e) => { e.stopPropagation(); onThreadOpen?.(msg.id); }}>
           💬 {allMsgs.filter((m) => m.thread_id === msg.id).length} {t('replies')}
         </button>
       )}
