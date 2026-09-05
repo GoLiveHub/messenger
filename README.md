@@ -2,6 +2,10 @@
 
 Веб-мессенджер на React + Express + Socket.io + SQLite. Личные чаты, группы, каналы, секретные чаты с E2E-шифрованием, голосовые сообщения, статусы доставки, реакции, ответы, пересылка, боты, папки и админ-панель.
 
+> **🔴 Живое демо:** https://messenger-production-07ac.up.railway.app/
+>
+> Стек: **TypeScript · React · Vite · Express · Socket.io · SQLite · Web Push · E2E (ECDH P-256 + AES-GCM) · FTS5**
+
 ## Возможности
 
 - Авторизация по номеру телефона (SMS-код) + двухфакторная аутентификация (пароль и TOTP)
