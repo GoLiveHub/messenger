@@ -546,7 +546,7 @@ export function getMessageReactions(messageId: number): ReactionRow[] {
     .all(messageId) as unknown as ReactionRow[];
 }
 
-// Aggregated reaction groups, e.g. [{emoji:'❤️', count:2, mine:true}]
+// Aggregated reaction groups, e.g. [{emoji:'like', count:2, mine:true}]
 export function reactionGroups(messageId: number, selfId: number) {
   const rows = getMessageReactions(messageId);
   const map = new Map<string, { emoji: string; count: number; mine: boolean }>();
