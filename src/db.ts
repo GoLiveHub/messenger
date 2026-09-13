@@ -186,6 +186,35 @@ db.exec(`
   );
 `);
 
+// Push dead-letter queue: failed notification deliveries awaiting retry
+db.exec(`
+  CREATE TABLE IF NOT EXISTS push_dlq (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel     TEXT NOT NULL,
+    target      TEXT NOT NULL,
+    payload     TEXT NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    last_error  TEXT,
+    next_retry_at TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_push_dlq_retry ON push_dlq (next_retry_at, attempts)');
+
+// Idempotency: dedupe keyed requests (webhooks, POST pushes) for 24h
+db.exec(`
+  CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key        TEXT PRIMARY KEY,
+    user_id    INTEGER,
+    endpoint   TEXT NOT NULL,
+    status     INTEGER,
+    response   TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_idempotency_created ON idempotency_keys (created_at)');
+
 // messages: media reference, reply-to, forwarded-from
 const msgCols2 = db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
 const msgHave2 = new Set(msgCols2.map((c) => c.name));

@@ -1,0 +1,16 @@
+apiVersion: v2
+name: messenger
+description: Telegram-style web messenger (Messenger)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - messenger
+  - chat
+  - websocket
+  - socket.io
+home: https://github.com/GOLIVEHUB/messenger-stabilized
+maintainers:
+  - name: GOLIVEHUB
+sources:
+  - https://github.com/GOLIVEHUB/messenger-stabilized

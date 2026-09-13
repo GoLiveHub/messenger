@@ -8,7 +8,7 @@ import { startServer, stopServer, register, req, testPhone } from './test-helper
 const EXPECTED_TABLES = [
   'users', 'sessions', 'blocks', 'block_history', 'chats', 'chat_members',
   'messages', 'media', 'auth_codes', 'recovery_codes', 'phone_change_codes',
-  'push_subscriptions', 'fcm_tokens', 'e2e_devices', 'e2e_signed_prekeys',
+  'push_subscriptions', 'push_dlq', 'idempotency_keys', 'fcm_tokens', 'e2e_devices', 'e2e_signed_prekeys',
   'e2e_one_time_prekeys', 'e2e_sessions', 'saved_messages', 'reports',
   'global_bans', 'group_bans', 'shadow_bans', 'join_requests',
   'sticker_packs', 'user_sticker_packs', 'bots', 'reactions',

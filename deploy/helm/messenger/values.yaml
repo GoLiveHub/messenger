@@ -1,0 +1,112 @@
+# Default values for the messenger Helm chart.
+# Override in values-<env>.yaml (e.g. values-prod.yaml).
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/GOLIVEHUB/messenger-stabilized
+  tag: latest
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+# --- Service ---
+service:
+  type: ClusterIP
+  port: 80
+
+# --- Ingress ---
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/websocket-services: ""
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  hosts:
+    - host: messenger.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: messenger-tls
+      hosts:
+        - messenger.example.com
+
+# --- Application config ---
+config:
+  NODE_ENV: production
+  PORT: "3001"
+  LOG_LEVEL: info
+  DATA_DIR: /app/data
+  STORAGE_DIR: /app/data/storage
+  DATA_RETENTION_DAYS: "30"
+
+# --- Secrets (provide via external secret management; these defaults are empty) ---
+secrets:
+  SERVER_SECRET: ""
+  VAPID_PUBLIC_KEY: ""
+  VAPID_PRIVATE_KEY: ""
+  FCM_SERVER_KEY: ""
+  REDIS_URL: ""
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+  storage: 1Gi
+
+# --- Resources ---
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# --- Probes ---
+livenessProbe:
+  path: /api/health/liveness
+  initialDelaySeconds: 20
+  periodSeconds: 10
+readinessProbe:
+  path: /api/health/readiness
+  initialDelaySeconds: 10
+  periodSeconds: 5
+
+# --- Storage ---
+persistence:
+  enabled: true
+  size: 5Gi
+  storageClassName: ""
+
+# --- Autoscaling ---
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 75
+
+# --- PodDisruptionBudget ---
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# --- Node / security ---
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  readOnlyRootFilesystem: false
+
+podAnnotations: {}
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

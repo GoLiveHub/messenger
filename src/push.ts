@@ -4,11 +4,19 @@
 import * as crypto from 'node:crypto';
 import { config } from './config.js';
 import { db } from './db.js';
+import { getCircuitBreaker } from './lib/circuitBreaker.js';
+import { withRetry } from './lib/retry.js';
+import { incCounter } from './lib/prometheus.js';
 
 const VAPID_headers = {
   'Content-Type': 'application/octet-stream',
   TTL: '86400',
 };
+
+// Circuit breaker for the vendor push endpoints (FCM/APNs): if the vendor is
+// down we fail fast instead of hammering it from every message.
+const fcmBreaker = getCircuitBreaker('push.fcm', { failureThreshold: 5, cooldownMs: 30_000 });
+const apnsBreaker = getCircuitBreaker('push.apns', { failureThreshold: 5, cooldownMs: 30_000 });
 
 export function getVapidPublicKey(): string {
   return config.vapidPublicKey;
@@ -91,10 +99,27 @@ export async function sendWebPush(
       body: aes128gcmPayload,
     });
 
-    return { ok: res.status >= 200 && res.status < 300, status: res.status };
+    // Throw on transient (retryable) failures so callers can back off and retry.
+    // 404/410 mean the subscription is gone — return so the caller deletes it.
+    if (res.status === 404 || res.status === 410) {
+      return { ok: false, status: res.status };
+    }
+    if (!(res.status >= 200 && res.status < 300)) {
+      const err = new Error(`Web push HTTP ${res.status}`) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
+    }
+    return { ok: true, status: res.status };
   } catch (err) {
     console.error('[push] send failed:', err);
-    return { ok: false };
+    const withStatus = err as Error & { status?: number };
+    if (!withStatus.status) {
+      // Network-level failure (timeout, DNS, socket) — retryable.
+      const e = new Error(String(err)) as Error & { status?: number };
+      e.status = 500;
+      throw e;
+    }
+    throw err;
   }
 }
 
@@ -111,9 +136,29 @@ export async function sendPushToUser(
       auth: string;
     }>;
     for (const sub of subs) {
-      const result = await sendWebPush(sub.endpoint, sub.p256dh, sub.auth, payload);
+      // Retry transient failures (429/5xx) once with backoff before giving up.
+      const result = await withRetry(
+        () => sendWebPush(sub.endpoint, sub.p256dh, sub.auth, payload),
+        {
+          attempts: 3,
+          baseDelayMs: 1_000,
+          maxDelayMs: 5_000,
+          timeoutMs: 15_000,
+          shouldRetry: (e) => {
+            const status = (e as { status?: number })?.status;
+            return typeof status === 'number' && (status === 429 || status >= 500);
+          },
+        },
+      ).catch((e: unknown) => {
+        return { ok: false as const, status: (e as { status?: number })?.status };
+      });
       if (!result.ok && result.status && (result.status === 404 || result.status === 410)) {
         db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(sub.endpoint);
+      } else if (!result.ok && result.status && (result.status === 429 || result.status >= 500)) {
+        // Transient vendor/rate-limit error — go to the DLQ for a later retry.
+        db.prepare(
+          'INSERT INTO push_dlq (user_id, channel, target, payload, attempts, last_error, next_retry_at) VALUES (?, ?, ?, ?, 0, ?, datetime(\'now\', \'+120 seconds\'))',
+        ).run(userId, 'webpush', sub.endpoint, JSON.stringify(payload), `HTTP ${result.status}`);
       }
     }
   }
@@ -238,6 +283,7 @@ async function getFCMAccessToken(cfg: FCMConfig): Promise<string> {
 export async function sendFCM(
   tokens: string[],
   payload: Record<string, unknown>,
+  userId = 0,
 ): Promise<{ ok: boolean; sent: number }> {
   const cfg = getFCMConfig();
   if (!cfg || !Array.isArray(tokens) || tokens.length === 0) {
@@ -256,6 +302,7 @@ export async function sendFCM(
 
     for (const token of tokens) {
       try {
+        fcmBreaker.before();
         const res = await fetch(`https://fcm.googleapis.com/v1/projects/${cfg.projectId}/messages:send`, {
           method: 'POST',
           headers: {
@@ -266,11 +313,22 @@ export async function sendFCM(
         });
         if (res.ok) {
           sent++;
+          fcmBreaker.success();
         } else if (res.status === 404 || res.status === 410) {
           db.prepare('DELETE FROM fcm_tokens WHERE token = ?').run(token);
+        } else if (res.status >= 500) {
+          fcmBreaker.failure();
+          throw new Error(`FCM HTTP ${res.status}`);
         }
-      } catch {
+      } catch (err) {
         // per-token failure should not abort remaining tokens
+        if (err instanceof Error && err.message !== 'FCM HTTP 500') fcmBreaker.failure();
+        if (err instanceof Error && /^FCM HTTP [5-9]/.test(err.message)) {
+          // Transient vendor error — schedule DLQ retry for this token
+          db.prepare(
+            'INSERT INTO push_dlq (user_id, channel, target, payload, attempts, last_error, next_retry_at) VALUES (?, ?, ?, ?, 0, ?, datetime(\'now\', \'+60 seconds\'))',
+          ).run(userId, 'fcm', token, JSON.stringify(payload), err.message.slice(0, 500));
+        }
       }
     }
     return { ok: sent > 0, sent };
@@ -285,7 +343,7 @@ export async function sendFCMToUser(userId: number, payload: Record<string, unkn
   if (!isFCMEnabled()) return;
   const rows = db.prepare('SELECT token FROM fcm_tokens WHERE user_id = ?').all(userId) as Array<{ token: string }>;
   if (!rows.length) return;
-  await sendFCM(rows.map((r) => r.token), payload);
+  await sendFCM(rows.map((r) => r.token), payload, userId);
 }
 
 // ======================== APNS MOBILE PUSH ========================

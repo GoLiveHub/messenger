@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: messenger-app
+  namespace: messenger
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/GOLIVEHUB/messenger-stabilized:production
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi

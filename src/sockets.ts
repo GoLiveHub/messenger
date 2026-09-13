@@ -24,10 +24,17 @@ import {
 import { logSuspicious } from './auth.js';
 import { isWebPushEnabled, sendPushToUser, isFCMEnabled, sendFCMToUser } from './push.js';
 import { decryptAtRest as _decryptAtRest } from './crypto.js';
+import { cacheIncr, cacheExpire } from './lib/redis.js';
+import { incCounter, setGauge } from './lib/prometheus.js';
+import { withRetry } from './lib/retry.js';
 
 // --- shadow ban helper ---
 function isShadowBanned(userId: number): boolean {
   return Boolean(db.prepare('SELECT 1 FROM shadow_bans WHERE user_id = ?').get(userId));
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
 // --- quiet hours: "HH:MM"-"HH:MM" window (UTC), supports overnight ranges ---
@@ -109,24 +116,45 @@ async function dispatchBotWebhooks(chatId: number, message: Record<string, unkno
       WHERE cm.chat_id = ? AND b.is_active = 1 AND b.webhook_url != ''
     `).all(chatId) as Array<{ id: number; webhook_url: string }>;
     for (const bot of bots) {
-      try {
-        if (!(await isSafeWebhookUrl(bot.webhook_url))) continue;
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 4000);
-        const resp = await fetch(bot.webhook_url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bot_id: bot.id, chat_id: chatId, message }),
-          signal: ctrl.signal,
-          redirect: 'manual',
-        });
-        clearTimeout(timer);
-        // Do not follow redirects to avoid SSRF via Location
-        if (resp.status >= 300 && resp.status < 400) {
-          const loc = resp.headers.get('location');
-          if (loc && !(await isSafeWebhookUrl(new URL(loc, bot.webhook_url).href))) continue;
-        }
-      } catch { /* ignore per-bot dispatch failures */ }
+      if (!(await isSafeWebhookUrl(bot.webhook_url))) continue;
+      // Idempotency: one delivery attempt per (bot, message) — retries reuse
+      // the same Idempotency-Key so a bot run twice never double-fires.
+      await withRetry(
+        async () => {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 4000);
+          try {
+            const resp = await fetch(bot.webhook_url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `bot-${bot.id}-${message.id}` },
+              body: JSON.stringify({ bot_id: bot.id, chat_id: chatId, message }),
+              signal: ctrl.signal,
+              redirect: 'manual',
+            });
+            // Do not follow redirects to avoid SSRF via Location
+            if (resp.status >= 300 && resp.status < 400) {
+              const loc = resp.headers.get('location');
+              if (loc && !(await isSafeWebhookUrl(new URL(loc, bot.webhook_url).href))) return;
+            }
+            // Retry transient failures (5xx, 429, network), skip permanent ones
+            if (resp.status >= 500 || resp.status === 429) {
+              const err = new Error(`webhook ${bot.webhook_url} failed with ${resp.status}`);
+              (err as any).retryable = true;
+              (err as any).status = resp.status;
+              throw err;
+            }
+          } finally {
+            clearTimeout(timer);
+          }
+        },
+        {
+          attempts: 3,
+          baseDelayMs: 200,
+          maxDelayMs: 5000,
+          timeoutMs: 8000,
+          shouldRetry: (e) => (e as any).retryable === true || (e as any).status === 429,
+        },
+      ).catch(() => { /* give up silently */ });
     }
   } catch { /* ignore dispatch failures */ }
 }
@@ -280,10 +308,16 @@ export function registerSockets(io: Server) {
     }
 
     const userId = getUserIdByToken(token);
-    if (!userId) return next(new Error('Unauthorized'));
+    if (!userId) {
+      incCounter('ws_auth_failures_total', 'Rejected socket auth attempts');
+      return next(new Error('Unauthorized'));
+    }
     // Global ban check
     const banned = db.prepare('SELECT 1 FROM global_bans WHERE user_id = ?').get(userId);
-    if (banned) return next(new Error('Account banned'));
+    if (banned) {
+      incCounter('ws_auth_failures_total', 'Rejected socket auth attempts', { reason: 'banned' });
+      return next(new Error('Account banned'));
+    }
     socket.data.userId = userId;
     socket.data.token = token;
     next();
@@ -293,6 +327,27 @@ export function registerSockets(io: Server) {
     const selfId: number = socket.data.userId;
     let messageWindowStartedAt = Date.now();
     let messageWindowCount = 0;
+
+    // --- WS metrics ---
+    incCounter('ws_connections_total', 'WebSocket connections established');
+    setGauge('ws_connections_active', presence.size, 'Active WebSocket users');
+
+    socket.on('disconnect', () => {
+      setGauge('ws_connections_active', presence.size, 'Active WebSocket users');
+    });
+
+    // --- Redis-backed per-user rate limit for realtime event storms ---
+    // (shared across instances so multi-node deployments get one budget)
+    const eventReportKey = `ws:events:${selfId}`;
+    async function checkEventBudget(): Promise<boolean> {
+      try {
+        const count = await cacheIncr(eventReportKey);
+        if (count === 1) await cacheExpire(eventReportKey, 60);
+        return count <= 600; // 600 realtime events / minute / user
+      } catch {
+        return true; // Redis down → fail-open
+      }
+    }
 
     try {
       db.prepare("UPDATE chat_members SET muted_until = NULL WHERE muted_until IS NOT NULL AND muted_until < datetime('now')").run();
@@ -306,9 +361,28 @@ export function registerSockets(io: Server) {
     broadcastPresence(io, selfId, true);
     emitInitialPresence(io, selfId);
 
-    socket.use((_packet, next) => {
+    socket.use(async (packet, next) => {
       const currentUserId = getUserIdByToken(String(socket.data.token ?? ''));
       if (currentUserId !== selfId) return next(new Error('Unauthorized'));
+
+      // Event budget over all WS emits (typing/presence/read floods count too).
+      if (!(await checkEventBudget())) {
+        incCounter('ws_rate_limited_total', 'WS events rate limited', { userId: String(selfId) });
+        return next(new Error('Event budget exceeded'));
+      }
+
+      // Payload validation: ghost/abusive clients must not crash handlers that
+      // destructure `payload.chatId` etc. Reject malformed shapes fast.
+      const event = String(packet[0] ?? '');
+      const data = packet[1];
+      const needsObject = event !== 'chat:join';
+      if (needsObject && !isPlainObject(data)) {
+        return next(new Error(`Invalid payload for ${event}`));
+      }
+      // 'typing' / 'recording' are latency-critical; accept primitive truthy values.
+      if ((event === 'typing' || event === 'recording') && data == null) {
+        return next(new Error(`Invalid payload for ${event}`));
+      }
       next();
     });
 
@@ -328,6 +402,7 @@ export function registerSockets(io: Server) {
     });
 
     socket.on('message:send', (payload, ack) => {
+      incCounter('ws_messages_total', 'WS message send attempts', { userId: String(selfId) });
       try {
         const now = Date.now();
         if (now - messageWindowStartedAt >= 60_000) {

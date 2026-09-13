@@ -1,0 +1,17 @@
+Messenger deployed!
+
+Status of your deployment:
+{{- if .Values.ingress.enabled }}
+Ingress host: {{ (index .Values.ingress.hosts 0).host }}
+{{- end }}
+
+Application endpoints:
+  - Liveness:  /api/health/liveness
+  - Readiness: /api/health/readiness
+  - Metrics:   /api/metrics/prometheus
+
+Useful commands:
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "messenger.name" . }}"
+-l "app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8080:3001
+  curl http://127.0.0.1:8080/api/health/readiness

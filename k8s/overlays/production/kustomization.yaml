@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: messenger
+resources:
+  - ../../base
+patchesStrategicMerge:
+  - deployment-prod.yaml
+configMapGenerator:
+  - name: messenger-config
+    namespace: messenger
+    behavior: merge
+    literals:
+      - LOG_LEVEL=info
+      - DATA_RETENTION_DAYS=90

@@ -1,0 +1,26 @@
+replicaCount: 3
+
+image:
+  tag: production
+  pullPolicy: IfNotPresent
+
+persistence:
+  enabled: true
+  size: 10Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12
+
+config:
+  LOG_LEVEL: info
+  DATA_RETENTION_DAYS: "90"
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi

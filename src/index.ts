@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import http from 'node:http';
 import path from 'node:path';
+import fsp from 'node:fs/promises';
 import zlib from 'node:zlib';
 import multer from 'multer';
 import sharp from 'sharp';
@@ -10,6 +11,11 @@ import { config } from './config.js';
 import { authRouter, deliverCode, logSuspicious, parseCookies, setSessionCookies, clearSessionCookies } from './auth.js';
 import { registerSockets, getChatMessages, insertServiceMessage } from './sockets.js';
 import { log } from './lib/logger.js';
+import { requestId } from './lib/requestId.js';
+import { requestTimeout } from './lib/requestTimeout.js';
+import { incCounter, incGauge, observeHistogram, renderMetrics, setGauge } from './lib/prometheus.js';
+import { idempotencyMiddleware } from './lib/idempotency.js';
+import { validateBody, uploadInitSchema, uploadChunkSchema, uploadFinalizeSchema, createGroupSchema, createChatSchema, editChatSchema, signUpSchema, sendCodeSchema, safeMediaMime, isActiveContentType } from './lib/validation.js';
 import { cacheGet, cacheSet, cacheIncr, cacheExpire, cacheDel } from './lib/redis.js';
 import {
   addBlock,
@@ -59,13 +65,19 @@ import {
 import { db } from './db.js';
 import { decryptAtRest, encryptAtRest, generateCode, hashPassword, sha256Hex, verifyPassword, randomToken } from './crypto.js';
 import { validatePhone } from './phone.js';
-import { getVapidPublicKey, isWebPushEnabled, sendPushToUser } from './push.js';
+import { getVapidPublicKey, isWebPushEnabled, sendPushToUser, sendWebPush, sendFCM, sendAPNs } from './push.js';
 import { uploadFile, getFile, deleteFile } from './lib/storage.js';
 
 // ======================== APP SETUP ========================
 
 const app = express();
 app.disable('x-powered-by');
+
+// --- Request ID (correlation across HTTP + WS + logs) ---
+app.use(requestId);
+
+// --- Request timeout (fail fast instead of hanging forever) ---
+app.use(requestTimeout(30_000));
 
 // Trust proxy (for rate limiting behind reverse proxy)
 if (config.isProduction) {
@@ -96,6 +108,28 @@ app.use((_req, res, next) => {
 
 // JSON body parser with size limit
 app.use(express.json({ limit: '1mb' }));
+
+// --- Prometheus request instrumentation ---
+const requestTimingStart = new WeakMap<express.Response, number>();
+app.use('/api', (req, res, next) => {
+  requestTimingStart.set(res, performance.now());
+  incCounter('http_requests_total', 'Total HTTP requests', { method: req.method, path: req.baseUrl + req.path });
+  res.on('finish', () => {
+    const start = requestTimingStart.get(res);
+    if (start != null) observeHistogram('http_request_duration_seconds', (performance.now() - start) / 1000, 'HTTP request duration', undefined, { method: req.method, path: req.baseUrl + req.path });
+    incCounter('http_responses_total', 'HTTP responses by status', { status: String(res.statusCode), path: req.baseUrl + req.path });
+    if (res.statusCode >= 500) incCounter('http_errors_total', 'HTTP 5xx responses', { path: req.baseUrl + req.path });
+  });
+  next();
+});
+
+// Track process-level metrics for liveness reporting
+let lastSocketCount = 0;
+setInterval(() => {
+  setGauge('process_memory_rss_bytes', process.memoryUsage().rss, 'RSS memory bytes');
+  setGauge('process_uptime_seconds', process.uptime(), 'Process uptime seconds');
+  setGauge('http_open_sockets', lastSocketCount, 'Open HTTP connections');
+}, 5_000);
 
 // --- API response compression (gzip) ---
 app.use('/api', (req, res, next) => {
@@ -134,6 +168,21 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 *
 // ======================== HTTP + SOCKET.IO ========================
 
 const httpServer = http.createServer(app);
+// Hard ceiling per request; the requestTimeout middleware answers 408 first.
+httpServer.requestTimeout = 60_000;
+httpServer.headersTimeout = 65_000;
+httpServer.keepAliveTimeout = 5_000;
+// Track open connections for the liveness gauge (works even with server.close).
+let openConnections = 0;
+httpServer.on('connection', (socket) => {
+  openConnections += 1;
+  socket.on('close', () => {
+    openConnections = Math.max(0, openConnections - 1);
+  });
+});
+setInterval(() => {
+  lastSocketCount = openConnections;
+}, 5_000);
 const io = new Server(httpServer, {
   ...(config.isProduction ? {} : { cors: { origin: config.allowedOrigins, credentials: true } }),
   maxHttpBufferSize: 1e6, // 1 MB max per message
@@ -176,6 +225,10 @@ async function globalRateLimit(req: express.Request, res: express.Response, next
   try {
     const count = await cacheIncr(key);
     if (count === 1) await cacheExpire(key, 60);
+    // Draft-8 RateLimit headers (RFC 6585 style)
+    res.set('RateLimit-Limit', '300');
+    res.set('RateLimit-Remaining', String(Math.max(0, 300 - count)));
+    res.set('RateLimit-Reset', String(60));
     if (count > 300) {
       log.suspicious('rate_limit_api', { ip: req.ip, count });
       res.set('Retry-After', '60');
@@ -264,7 +317,7 @@ function t_server(key: string, lang?: string): string {
 // ======================== AUTH MIDDLEWARE ========================
 
 // Paths that do NOT require authentication
-const PUBLIC_PATHS = new Set(['/api/health', '/api/auth/checkPhone', '/api/auth/sendCode', '/api/auth/signIn', '/api/auth/signUp', '/api/auth/checkPassword', '/api/auth/captcha/challenge', '/api/auth/captcha/verify', '/api/auth/verifyTotp', '/api/auth/recover']);
+const PUBLIC_PATHS = new Set(['/api/health', '/api/health/liveness', '/api/health/readiness', '/api/metrics/prometheus', '/api/auth/checkPhone', '/api/auth/sendCode', '/api/auth/signIn', '/api/auth/signUp', '/api/auth/checkPassword', '/api/auth/captcha/challenge', '/api/auth/captcha/verify', '/api/auth/verifyTotp', '/api/auth/recover']);
 
 function getOriginalPath(req: express.Request): string {
   return req.baseUrl + req.path;
@@ -337,7 +390,32 @@ function csrfProtection(req: express.Request, res: express.Response, next: expre
 }
 
 // Apply CSRF protection after auth (auth sets userId needed for logging)
-app.use('/api', auth, csrfProtection, perUserRateLimit);
+app.use('/api', auth, csrfProtection, perUserRateLimit, idempotencyMiddleware);
+
+// Mutating requests must carry a JSON object body (or none) — never an array,
+// a primitive or a string that `req.body.foo` would throw on.
+app.use('/api', (req, res, next) => {
+  const hasBody = req.headers['content-length'] !== undefined || req.body !== undefined || typeof req.body === 'object';
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS' && req.body != null && (typeof req.body !== 'object' || Array.isArray(req.body))) {
+    return res.status(400).json({ error: 'Request body must be a JSON object' });
+  }
+  void hasBody;
+  next();
+});
+
+// Per-request access log with traceable request id
+app.use('/api', (req, res, next) => {
+  const start = performance.now();
+  res.on('finish', () => {
+    incCounter('http_requests_total_traced', 'Traced HTTP requests', { method: req.method });
+    log.debug(`http ${res.statusCode} ${req.method} ${req.baseUrl + req.path}`, {
+      requestId: req.id,
+      userId: (req as any).userId ?? null,
+      durationMs: Math.round(performance.now() - start),
+    });
+  });
+  next();
+});
 
 // ======================== ROUTES ========================
 
@@ -357,9 +435,53 @@ app.get('/api/health', async (_req, res) => {
   res.status(status).json({ ok: dbOk, db: dbOk, redis: redisOk });
 });
 
+// --- Liveness: process is up, no dependencies touched ---
+app.get('/api/health/liveness', (_req, res) => {
+  res.status(200).json({ ok: true });
+});
+
+// --- Readiness: can the process actually serve traffic today? ---
+app.get('/api/health/readiness', async (_req, res) => {
+  let dbOk = false;
+  try {
+    db.prepare('SELECT 1').get();
+    dbOk = true;
+  } catch { /* db error */ }
+  let redisOk = false;
+  try {
+    const c = await import('./lib/redis.js').then(m => m.getRedisClient());
+    await c.set('_readiness', '1', 'EX', 5);
+    redisOk = true;
+  } catch { /* redis error */ }
+  if (!dbOk) {
+    incCounter('readiness_failures_total', 'Readiness probe failures', { check: 'db' });
+    return res.status(503).json({ ok: false, db: false });
+  }
+  if (!redisOk) {
+    incCounter('readiness_failures_total', 'Readiness probe failures', { check: 'redis' });
+    return res.status(503).json({ ok: false, db: true, redis: false });
+  }
+  res.status(200).json({ ok: true, db: true, redis: true });
+});
+
 // --- Feature flags (public, no auth) ---
 app.get('/api/features', (_req, res) => {
   res.json(config.features);
+});
+
+// --- Prometheus metrics (text exposition format, scrape-friendly) ---
+app.get('/api/metrics/prometheus', (_req, res) => {
+  // Refresh process-level gauges on scrape so values are current
+  setGauge('process_memory_rss_bytes', process.memoryUsage().rss, 'RSS memory bytes');
+  setGauge('process_uptime_seconds', process.uptime(), 'Process uptime seconds');
+  setGauge('http_open_sockets', lastSocketCount, 'Open HTTP connections');
+  try {
+    res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(renderMetrics());
+  } catch (e) {
+    res.status(500).send('# metrics unavailable\n');
+  }
 });
 
 // --- Metrics endpoint (admin only) ---
@@ -1309,10 +1431,11 @@ app.get('/api/users/:id', (req, res) => {
 });
 
 // create or get a chat with a peer
-app.post('/api/chats', (req, res) => {
+app.post('/api/chats', validateBody(createChatSchema), (req, res) => {
   const selfId = (req as any).userId;
-  const peerId = Number(req.body?.peerId);
-  const kind: 'regular' | 'secret' = req.body?.kind === 'secret' ? 'secret' : 'regular';
+  const v = (req as any).validatedBody as { peerId: number; kind?: string };
+  const peerId = Number(v.peerId);
+  const kind: 'regular' | 'secret' = v.kind === 'secret' ? 'secret' : 'regular';
   if (!peerId || peerId === selfId) return res.status(400).json({ error: 'Invalid peer' });
   const peer = getUserById(peerId);
   if (!peer) return res.status(404).json({ error: 'User not found' });
@@ -1383,7 +1506,7 @@ function broadcastGroupInfo(chatId: number) {
   }
 }
 
-app.post('/api/groups', (req, res) => {
+app.post('/api/groups', validateBody(createGroupSchema), (req, res) => {
   const selfId = (req as any).userId;
   const kind: 'group' | 'channel' = req.body?.kind === 'channel' ? 'channel' : 'group';
   const title = String(req.body?.title ?? '').trim();
@@ -2347,7 +2470,7 @@ app.post('/api/media', upload.single('file'), async (req, res) => {
     senderId: selfId,
     kind,
     name: String(req.file.originalname || 'file').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 255) || 'file',
-    mime: req.file.mimetype || 'application/octet-stream',
+    mime: safeMediaMime(req.file.mimetype) || 'application/octet-stream',
     size: req.file.size,
     body: enc.body,
     iv: enc.iv,
@@ -2376,12 +2499,13 @@ interface UploadSession {
 
 const uploadSessions = new Map<string, UploadSession>();
 
-app.post('/api/media/upload-init', (req, res) => {
+app.post('/api/media/upload-init', validateBody(uploadInitSchema), (req, res) => {
   const selfId = (req as any).userId;
+  const v = (req as any).validatedBody as { chatId: number; kind?: string; name?: string; mime?: string; totalChunks: number; size?: number };
+  const { chatId, kind, name, mime, totalChunks, size } = v;
   // Per-user upload session limit (prevent memory DoS)
   const userSessions = [...uploadSessions.keys()].filter((k) => k.startsWith(`u_${selfId}_`)).length;
   if (userSessions >= 5) return res.status(429).json({ error: 'Too many upload sessions. Wait for existing uploads to finish.' });
-  const { chatId, kind, name, mime, totalChunks, size } = req.body ?? {};
   if (!chatId) return res.status(400).json({ error: 'Missing fields' });
   if (!getChatForUser(Number(chatId), selfId)) return res.status(403).json({ error: 'Chat not found' });
   // Validate chunk count (positive integer, bounded to prevent sparse-array abuse)
@@ -2411,8 +2535,8 @@ app.post('/api/media/upload-init', (req, res) => {
   res.json({ uploadId });
 });
 
-app.post('/api/media/upload-chunk', upload.single('chunk'), (req, res) => {
-  const { uploadId, chunkIndex } = req.body ?? {};
+app.post('/api/media/upload-chunk', upload.single('chunk'), validateBody(uploadChunkSchema), (req, res) => {
+  const { uploadId, chunkIndex } = (req as any).validatedBody as { uploadId: string; chunkIndex: number };
   const session = uploadSessions.get(uploadId);
   if (!session) return res.status(404).json({ error: 'Upload session not found' });
   if (!req.file?.buffer) return res.status(400).json({ error: 'No chunk data' });
@@ -2433,9 +2557,9 @@ app.post('/api/media/upload-chunk', upload.single('chunk'), (req, res) => {
   res.json({ ok: true, received: session.receivedCount, total: session.totalChunks });
 });
 
-app.post('/api/media/upload-finalize', async (req, res) => {
+app.post('/api/media/upload-finalize', validateBody(uploadFinalizeSchema), async (req, res) => {
   const selfId = (req as any).userId;
-  const { uploadId } = req.body ?? {};
+  const { uploadId } = (req as any).validatedBody as { uploadId: string };
   const session = uploadSessions.get(uploadId);
   if (!session) return res.status(404).json({ error: 'Upload session not found' });
   // Require every chunk to have arrived before assembling (dense, no gaps).
@@ -2504,7 +2628,27 @@ app.get('/api/media/:id', async (req, res) => {
   } else {
     plain = decryptAtRest(Buffer.from(media.body as Uint8Array), Buffer.from(media.iv as Uint8Array));
   }
-  res.set('Content-Type', media.mime || 'application/octet-stream');
+  const mime = media.mime || 'application/octet-stream';
+  const mimeSafeHeader = safeMediaMime(mime, 'application/octet-stream');
+  // Never serve active content (HTML/SVG/XML/JS) inline from object storage /
+  // DB blobs — always degrade to download-only + sandbox. This is the final
+  // chokepoint, so even legacy rows or a single-upload route that stored the
+  // caller-supplied mime can never become stored-XSS on the app origin.
+  const isActive = isActiveContentType(mime);
+  if (isActive) {
+    res.set('Content-Type', 'application/octet-stream');
+    res.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(media.name || 'file')}`);
+    res.set('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.send(plain);
+    return;
+  }
+  const inlineable = /^(image\/|audio\/|video\/|text\/plain)/.test(mimeSafeHeader);
+  res.set('Content-Type', mimeSafeHeader);
+  if (!inlineable) {
+    res.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(media.name || 'file')}`);
+    res.set('X-Content-Type-Options', 'nosniff');
+  }
   res.set('Cache-Control', 'private, max-age=3600');
   if (req.query.download !== undefined) {
     res.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(media.name || 'file')}`);
@@ -3438,21 +3582,26 @@ app.post('/api/bots/:id/set-webhook', (req, res) => {
 function gracefulShutdown(signal: string) {
   log.info(`received ${signal}, shutting down gracefully...`);
   log.suspicious('server_shutdown', { signal });
+
+  // 1. Tell all connected clients to drain (no more sends).
+  try { io.emit('server:draining', { reason: 'server restart' }); } catch { /* ignore */ }
+
+  // 2. Reject new connections; stop accepting new HTTP requests.
   httpServer.close(() => {
     log.info('HTTP server closed');
+    // 3. Close DB only after HTTP is closed so in-flight writes finish.
     try {
       db.close();
       log.info('database closed');
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
     process.exit(0);
   });
-  // Force exit after 5 seconds
+
+  // Force exit after 15 seconds (was 5s — extra time for WS close handshake + graceful drain).
   setTimeout(() => {
     log.error('forced shutdown after timeout');
     process.exit(1);
-  }, 5_000);
+  }, 15_000);
 }
 
 process.on('unhandledRejection', (reason) => {
@@ -3588,8 +3737,8 @@ app.get('/api/link-preview', async (req, res) => {
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'API route not found' }));
 
-app.use(((error, _req, res, _next) => {
-  log.error('unhandled request error', { error: String(error), stack: error.stack });
+app.use(((error, req, res, _next) => {
+  log.error('unhandled request error', { error: String(error), stack: error.stack, requestId: req.id, path: req.path, method: req.method });
   if (error instanceof multer.MulterError) {
     return res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: error.message });
   }
@@ -3644,6 +3793,57 @@ setInterval(() => {
   } catch { /* ignore */ }
 }, 15_000);
 
+// ======================== PUSH DLQ RETRY ========================
+// Retry failed push deliveries (max 5 attempts; poison messages dropped).
+setInterval(async () => {
+  try {
+    const due = db
+      .prepare(`SELECT * FROM push_dlq WHERE next_retry_at <= datetime('now') AND attempts < 5 ORDER BY next_retry_at LIMIT 200`)
+      .all() as Array<{ id: number; user_id: number; channel: string; target: string; payload: string; attempts: number }>;
+    for (const item of due) {
+      try {
+        let ok = false;
+        let causeMsg = 'push dlq retry failed';
+        let payload: Record<string, unknown> = {};
+        try { payload = JSON.parse(item.payload); } catch { payload = {}; }
+        if (item.channel === 'webpush') {
+          const row = db.prepare('SELECT p256dh, auth FROM push_subscriptions WHERE endpoint = ?').get(item.target) as { p256dh: string; auth: string } | undefined;
+          if (row) {
+            const r = await awaitSendWebPush(item.target, row.p256dh, row.auth, payload);
+            ok = r.ok;
+            if (r.status === 404 || r.status === 410) db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(item.target);
+            causeMsg = r.status ? `HTTP ${r.status}` : causeMsg;
+          } else {
+            ok = true; // endpoint gone — nothing to retry
+          }
+        } else if (item.channel === 'fcm') {
+          const r = await sendFCM([item.target], payload, item.user_id);
+          ok = r.ok;
+        } else if (item.channel === 'apns') {
+          const r = await sendAPNs([item.target], { title: String(payload.title ?? 'Messenger'), body: String(payload.body ?? 'New message') });
+          ok = r.ok;
+        }
+        if (ok) {
+          db.prepare('DELETE FROM push_dlq WHERE id = ?').run(item.id);
+        } else {
+          const nextDelay = Math.min(60_000 * 2 ** (item.attempts + 1), 3_600_000);
+          db.prepare(`UPDATE push_dlq SET attempts = attempts + 1, last_error = ?, next_retry_at = datetime('now', ?) WHERE id = ?`)
+            .run(causeMsg.slice(0, 500), `+${Math.round(nextDelay / 1000)} seconds`, item.id);
+        }
+      } catch (e) {
+        log.error('push dlq item failed', { dlqId: item.id, error: String(e) });
+        db.prepare(`UPDATE push_dlq SET attempts = attempts + 1, next_retry_at = datetime('now', '+10 minutes') WHERE id = ?`).run(item.id);
+      }
+    }
+    // Drop poison messages (attempts >= 5)
+    db.prepare('DELETE FROM push_dlq WHERE attempts >= 5').run();
+  } catch { /* ignore */ }
+}, 30_000);
+
+function awaitSendWebPush(endpoint: string, p256dh: string, auth: string, payload: Record<string, unknown>): Promise<{ ok: boolean; status?: number }> {
+  return sendWebPush(endpoint, p256dh, auth, payload).catch(() => ({ ok: false }));
+}
+
 // ======================== DATA RETENTION ========================
 setInterval(() => {
   try {
@@ -3673,6 +3873,10 @@ setInterval(() => {
     try { db.prepare("DELETE FROM e2e_signed_prekeys WHERE created_at < datetime('now', '-30 days')").run(); } catch { /* ignore */ }
     // Purge consumed one-time prekeys
     try { db.prepare('DELETE FROM e2e_one_time_prekeys WHERE consumed = 1').run(); } catch { /* ignore */ }
+    // Purge expired idempotency keys (24h TTL)
+    try { db.prepare("DELETE FROM idempotency_keys WHERE created_at < datetime('now', '-1 day')").run(); } catch { /* ignore */ }
+    // Purge old push DLQ entries (>7 days)
+    try { db.prepare("DELETE FROM push_dlq WHERE created_at < datetime('now', '-7 days')").run(); } catch { /* ignore */ }
     // Auto-archive chats inactive for >30 days (direct chats only)
     try {
       const staleChats = db.prepare(`
@@ -3696,6 +3900,35 @@ setInterval(() => {
     log.error('data_retention_error', { error: String(e) });
   }
 }, 3_600_000); // Run every hour
+
+// ======================== AUTO BACKUP ========================
+// Every 6h: full SQLite snapshot via VACUUM INTO (consistent even in WAL mode),
+// keep the newest 5 snapshots locally and optionally push to S3-compatible
+// object storage (STORAGE_DRIVER=s3 + S3_* env vars). Does not stop the server.
+setInterval(async () => {
+  try {
+    const backupDir = path.join('data', 'backups');
+    await fsp.mkdir(backupDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = path.join(backupDir, `auto-${stamp}.db`);
+    // Force a WAL checkpoint first so the snapshot is complete
+    try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* WAL not in use */ }
+    db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+    const stat = await fsp.stat(backupPath);
+    log.info(`auto_backup: created ${backupPath} (${(stat.size / 1024).toFixed(1)} KB)`);
+    // Push to S3 if configured (best-effort, fire-and-forget)
+    uploadFile(`backups/auto-${stamp}.db`, await fsp.readFile(backupPath), 'application/octet-stream')
+      .then((key) => log.info(`auto_backup: pushed to object storage key=${key}`))
+      .catch((e: any) => log.debug('auto_backup_s3_skip', { reason: String(e) }));
+    // Rotate: keep only the newest 5 local auto-*.db
+    const files = (await fsp.readdir(backupDir)).filter((f) => f.startsWith('auto-') && f.endsWith('.db')).sort();
+    for (let i = 0; i < files.length - 5; i += 1) {
+      await fsp.unlink(path.join(backupDir, files[i])).catch(() => {});
+    }
+  } catch (e) {
+    log.error('auto_backup_error', { error: String(e) });
+  }
+}, 6 * 3_600_000);
 
 // --- Admin: data retention ---
 app.get('/api/admin/data-retention', (req, res) => {
