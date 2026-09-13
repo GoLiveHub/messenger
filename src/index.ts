@@ -67,6 +67,7 @@ import { decryptAtRest, encryptAtRest, generateCode, hashPassword, sha256Hex, ve
 import { validatePhone } from './phone.js';
 import { getVapidPublicKey, isWebPushEnabled, sendPushToUser, sendWebPush, sendFCM, sendAPNs } from './push.js';
 import { uploadFile, getFile, deleteFile } from './lib/storage.js';
+import { getClientIp } from './lib/ip.js';
 
 // ======================== APP SETUP ========================
 
@@ -79,15 +80,11 @@ app.use(requestId);
 // --- Request timeout (fail fast instead of hanging forever) ---
 app.use(requestTimeout(30_000));
 
-// Trust proxy (for rate limiting behind reverse proxy)
-if (config.isProduction) {
-  app.set('trust proxy', 1);
-}
-
-// CORS (development only — production uses same-origin with HTTPS)
-if (!config.isProduction) {
-  app.use(cors({ origin: config.allowedOrigins, credentials: true }));
-}
+// IMPORTANT: we do NOT enable express 'trust proxy'. Treating X-Forwarded-For
+// as client identity allows header-rotation to bypass per-IP rate limits.
+// Client IP is resolved via lib/ip.getClientIp(), which only honors XFF when
+// the direct socket peer is a known proxy (loopback/private/link-local), and
+// otherwise falls back to the socket address.
 
 // Security headers
 app.use((_req, res, next) => {
@@ -100,11 +97,17 @@ app.use((_req, res, next) => {
   if (config.isProduction) {
     res.setHeader(
       'Content-Security-Policy',
-      "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:",
+      "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:",
     );
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   }
   next();
 });
+
+// CORS (development only — production uses same-origin with HTTPS)
+if (!config.isProduction) {
+  app.use(cors({ origin: config.allowedOrigins, credentials: true }));
+}
 
 // JSON body parser with size limit
 app.use(express.json({ limit: '1mb' }));
@@ -160,6 +163,29 @@ app.use('/api', (req, res, next) => {
 
 // Static files
 const distPath = path.resolve(process.cwd(), 'dist');
+
+// 404 for sensitive/secret-looking paths instead of serving the SPA shell —
+// avoids leaking "this is a Node app at <path>" info to scanners.
+const SENSITIVE_PATH = new Set(['/.env', '/.git/HEAD', '/.git/config', '/.svn/entries', '/.DS_Store', '/composer.lock', '/package-lock.json', '/yarn.lock', '/phpinfo.php', '/wp-login.php', '/server-status', '/actuator', '/vendor/']);
+app.use((req, res, next) => {
+  const path = req.path.toLowerCase();
+  if (SENSITIVE_PATH.has(req.path)
+    || path.startsWith('/.env')
+    || path.startsWith('/.git')
+    || path.startsWith('/.svn')
+    || path.startsWith('/content-manager')) {
+    log.suspicious('scanner_sensitive_path', { path: req.path, ip: getClientIp(req) });
+    return res.status(404).send('Not Found');
+  }
+  // Source maps & dev/bundler artifacts should never be served
+  if (req.path.endsWith('.map') || req.path.includes('/__webpack') || req.path.includes('/_next/static')) {
+    return res.status(404).send('Not Found');
+  }
+  return next();
+});
+app.get('/robots.txt', (_req, res) => {
+  res.type('text/plain').send('User-agent: *\nDisallow: /\n');
+});
 app.use(express.static(distPath));
 
 // File upload (8 MB limit)
@@ -183,9 +209,16 @@ httpServer.on('connection', (socket) => {
 setInterval(() => {
   lastSocketCount = openConnections;
 }, 5_000);
+const allowedWsOrigins = new Set([...config.allowedOrigins, ...(config.isProduction ? [] : [`http://localhost:${config.port}`])]);
 const io = new Server(httpServer, {
-  ...(config.isProduction ? {} : { cors: { origin: config.allowedOrigins, credentials: true } }),
-  maxHttpBufferSize: 1e6, // 1 MB max per message
+  // Production: enforce same-origin for Socket.IO (CSWSH protection). The
+  // handshake must come from the app's own origin; otherwise reject.
+  cors: { origin: (origin, cb) => {
+    if (!config.isProduction) return cb(null, true);
+    if (!origin || allowedWsOrigins.has(origin)) return cb(null, true);
+    return cb(new Error('Origin not allowed'));
+  }, credentials: true },
+  maxHttpBufferSize: 256 * 1024, // 256 KB max per WS message (media goes over HTTP)
   pingTimeout: 20000,
   pingInterval: 25000,
   transports: ['websocket', 'polling'],
@@ -219,9 +252,27 @@ void setupRedisAdapter();
 
 // ======================== GLOBAL RATE LIMITING ========================
 
-// Per-IP rate limiter for all API routes (Redis-backed with in-memory fallback)
+// Per-IP rate limiter for all API routes (Redis-backed with in-memory fallback).
+// Keying is (clientIp, userId) so a logged-in user gets a stable personal bucket
+// even behind NAT/shared edge, while anonymous clients share an IP bucket.
+// The IP is resolved from a trusted peer only (lib/ip), so spoofing
+// X-Forwarded-For/X-Real-IP/CF-Connecting-Ip cannot open fresh buckets.
 async function globalRateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const key = `ratelimit:api:${req.ip || req.socket?.remoteAddress || 'unknown'}`;
+  const ip = getClientIp(req);
+  // Resolve userId here (runs before the auth middleware chain) so logged-in
+  // users get a stable personal bucket even behind NAT/shared edge.
+  let userId: number | null = null;
+  try {
+    const cookies = parseCookies(req);
+    const cookieToken = cookies[config.sessionCookieName];
+    const bearer = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null;
+    const token = cookieToken || bearer;
+    if (token) {
+      const session = getSessionByToken(token);
+      if (session) userId = session.user_id;
+    }
+  } catch { /* fall through to IP-only bucket */ }
+  const key = userId != null ? `ratelimit:api:${ip}:${userId}` : `ratelimit:api:${ip}`;
   try {
     const count = await cacheIncr(key);
     if (count === 1) await cacheExpire(key, 60);
@@ -230,7 +281,7 @@ async function globalRateLimit(req: express.Request, res: express.Response, next
     res.set('RateLimit-Remaining', String(Math.max(0, 300 - count)));
     res.set('RateLimit-Reset', String(60));
     if (count > 300) {
-      log.suspicious('rate_limit_api', { ip: req.ip, count });
+      log.suspicious('rate_limit_api', { ip, userId: userId ?? null, count });
       res.set('Retry-After', '60');
       return res.status(429).json({ error: t_server('rate_limit') });
     }
@@ -240,8 +291,14 @@ async function globalRateLimit(req: express.Request, res: express.Response, next
   next();
 }
 
-// Apply global rate limit to all API routes
-app.use('/api', globalRateLimit);
+// Apply global rate limit to all API routes.
+// /api/health* is exempted: it is a required healthcheck surface for the
+// platform/load balancer and is exercised frequently by probes.
+const RATE_LIMIT_EXEMPT = new Set(['/api/health', '/api/health/liveness', '/api/health/readiness']);
+app.use('/api', (req, res, next) => {
+  if (RATE_LIMIT_EXEMPT.has(req.baseUrl + req.path)) return next();
+  return globalRateLimit(req, res, next);
+});
 
 // Per-authenticated-user rate limiter (defense-in-depth after the per-IP one,
 // so a single logged-in user cannot hammer the API from many shared IPs).
@@ -419,20 +476,8 @@ app.use('/api', (req, res, next) => {
 
 // ======================== ROUTES ========================
 
-app.get('/api/health', async (_req, res) => {
-  let dbOk = false;
-  try {
-    db.prepare('SELECT 1').get();
-    dbOk = true;
-  } catch { /* db error */ }
-  let redisOk = false;
-  try {
-    const c = await import('./lib/redis.js').then(m => m.getRedisClient());
-    await c.set('_health', '1', 'EX', 5);
-    redisOk = true;
-  } catch { /* redis error */ }
-  const status = dbOk ? 200 : 503;
-  res.status(status).json({ ok: dbOk, db: dbOk, redis: redisOk });
+app.get('/api/health', (_req, res) => {
+  res.status(200).json({ ok: true });
 });
 
 // --- Liveness: process is up, no dependencies touched ---
@@ -3741,6 +3786,18 @@ app.use(((error, req, res, _next) => {
   log.error('unhandled request error', { error: String(error), stack: error.stack, requestId: req.id, path: req.path, method: req.method });
   if (error instanceof multer.MulterError) {
     return res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: error.message });
+  }
+  // express.json(): payload too large -> 413 (not 500), malformed JSON -> 400
+  const status: number = typeof error?.status === 'number' ? error.status : 0;
+  if (status === 413 || status === 400) {
+    const message = status === 413 ? 'Request entity too large' : 'Malformed JSON body';
+    return res.status(status).json({ error: message });
+  }
+  if (error?.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request entity too large' });
+  }
+  if (error instanceof SyntaxError) {
+    return res.status(400).json({ error: 'Malformed JSON body' });
   }
   return res.status(500).json({ error: t_server('server_error') });
 }) as express.ErrorRequestHandler);

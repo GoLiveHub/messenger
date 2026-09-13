@@ -285,6 +285,19 @@ function room(chatId: number) {
 
 export function registerSockets(io: Server) {
   io.use((socket, next) => {
+    // Cross-Site WebSocket Hijacking mitigation: the Origin (or
+    // Sec-WebSocket-Origin) header, when present, must match the app's own
+    // origin in production. Native (non-browser) clients may omit it.
+    if (config.isProduction) {
+      const origin = String(socket.handshake.headers?.origin || socket.handshake.headers?.['sec-websocket-origin'] || '');
+      if (origin && !config.allowedOrigins.some((o) => o === origin)) {
+        incCounter('ws_auth_failures_total', 'Rejected socket auth attempts', { reason: 'origin' });
+        const err = new Error('Cross-site web socket rejected') as Error & { data?: unknown };
+        err.data = { type: 401 };
+        return next(err);
+      }
+    }
+
     // Try auth.token from handshake first (backwards compatibility)
     let token = String(socket.handshake.auth?.token ?? '');
 
@@ -310,13 +323,17 @@ export function registerSockets(io: Server) {
     const userId = getUserIdByToken(token);
     if (!userId) {
       incCounter('ws_auth_failures_total', 'Rejected socket auth attempts');
-      return next(new Error('Unauthorized'));
+      const err = new Error('Unauthorized') as Error & { data?: unknown };
+      err.data = { type: 401 };
+      return next(err);
     }
     // Global ban check
     const banned = db.prepare('SELECT 1 FROM global_bans WHERE user_id = ?').get(userId);
     if (banned) {
       incCounter('ws_auth_failures_total', 'Rejected socket auth attempts', { reason: 'banned' });
-      return next(new Error('Account banned'));
+      const err = new Error('Account banned') as Error & { data?: unknown };
+      err.data = { type: 403 };
+      return next(err);
     }
     socket.data.userId = userId;
     socket.data.token = token;

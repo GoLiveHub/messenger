@@ -20,6 +20,7 @@ import { config } from './config.js';
 import { validatePhone } from './phone.js';
 import { getSmsProvider } from './lib/sms.js';
 import { createRateLimiter, type RateLimiter } from './lib/rateLimit.js';
+import { getClientIp } from './lib/ip.js';
 import { verifyTotp } from './lib/totp.js';
 
 export const authRouter = Router();
@@ -50,11 +51,12 @@ async function getPhoneCodeLimiter(): Promise<RateLimiter> {
 }
 
 async function sensitiveEndpointLimit(req: Request, res: Response, next: NextFunction) {
-  const key = `auth:${req.ip || req.socket?.remoteAddress || 'unknown'}`;
+  const ip = getClientIp(req);
+  const key = `auth:${ip}`;
   const limiter = await getAuthLimiter();
   const result = await limiter.allow(key);
   if (!result.allowed) {
-    logSuspicious('rate_limit_auth', { ip: key });
+    logSuspicious('rate_limit_auth', { ip });
     res.set('Retry-After', '60');
     return res.status(429).json({ error: 'Too many authentication attempts. Try again shortly.' });
   }
@@ -63,7 +65,7 @@ async function sensitiveEndpointLimit(req: Request, res: Response, next: NextFun
 
 // Mass-registration protection: limit sign-ups per IP prefix
 async function massRegistrationLimit(req: Request, res: Response, next: NextFunction) {
-  const ip = String(req.ip || req.socket?.remoteAddress || 'unknown');
+  const ip = getClientIp(req);
   let ipPrefix: string;
   if (ip.includes(':')) {
     // IPv6: group by /64 prefix (first 8 hex groups)
@@ -226,7 +228,7 @@ authRouter.post('/sendCode', async (req, res) => {
   }
   const result = issueCode(phone);
   if (result.limitExceeded) {
-    logSuspicious('code_send_limit', { phone, ip: String(req.ip || '') });
+    logSuspicious('code_send_limit', { phone, ip: getClientIp(req) });
     return res.status(429).json({ error: 'Too many attempts. Try again in an hour.' });
   }
   if (result.retryAfterMs) {
@@ -311,7 +313,7 @@ authRouter.post('/signIn', async (req, res) => {
   const token = createSession(user.id, deviceLabelOf(req));
   const csrfToken = randomToken(32);
   setSessionCookies(res, token, csrfToken);
-  logSuspicious('auth_success_signin', { userId: user.id, ip: String(req.ip || '') });
+  logSuspicious('auth_success_signin', { userId: user.id, ip: getClientIp(req) });
   res.json({ status: 'ok', user: publicUser(user) });
 });
 
@@ -359,7 +361,7 @@ authRouter.post('/signUp', massRegistrationLimit, async (req, res) => {
   const token = createSession(user.id, deviceLabelOf(req));
   const csrfToken = randomToken(32);
   setSessionCookies(res, token, csrfToken);
-  logSuspicious('auth_success_signup', { userId: user.id, phone, ip: String(req.ip || '') });
+  logSuspicious('auth_success_signup', { userId: user.id, phone, ip: getClientIp(req) });
   res.json({ user: publicUser(user) });
 });
 
@@ -375,7 +377,7 @@ authRouter.post('/checkPassword', async (req, res) => {
   }
   const user = getUserByPhone(phone);
   if (!user || !user.password || !verifyPassword(password, user.password)) {
-    logSuspicious('2fa_fail', { phone, ip: String(req.ip || '') });
+    logSuspicious('2fa_fail', { phone, ip: getClientIp(req) });
     return res.status(403).json({ error: 'Wrong password' });
   }
   if (!await verifyCodeInput(phone, code, phoneCodeHash, true)) {
@@ -384,7 +386,7 @@ authRouter.post('/checkPassword', async (req, res) => {
   const token = createSession(user.id, deviceLabelOf(req));
   const csrfToken = randomToken(32);
   setSessionCookies(res, token, csrfToken);
-  logSuspicious('auth_success_2fa', { userId: user.id, ip: String(req.ip || '') });
+  logSuspicious('auth_success_2fa', { userId: user.id, ip: getClientIp(req) });
   res.json({ user: publicUser(user) });
 });
 
@@ -404,7 +406,7 @@ authRouter.post('/verifyTotp', async (req, res) => {
     return res.status(404).json({ error: 'No account or TOTP not enabled' });
   }
   if (!verifyTotp(user.totp_secret, totpToken)) {
-    logSuspicious('totp_auth_fail', { phone, ip: String(req.ip || '') });
+    logSuspicious('totp_auth_fail', { phone, ip: getClientIp(req) });
     return res.status(403).json({ error: 'Invalid TOTP code' });
   }
   if (!await verifyCodeInput(phone, code, phoneCodeHash, true)) {
@@ -413,7 +415,7 @@ authRouter.post('/verifyTotp', async (req, res) => {
   const token = createSession(user.id, deviceLabelOf(req));
   const csrfToken = randomToken(32);
   setSessionCookies(res, token, csrfToken);
-  logSuspicious('auth_success_totp', { userId: user.id, ip: String(req.ip || '') });
+  logSuspicious('auth_success_totp', { userId: user.id, ip: getClientIp(req) });
   res.json({ user: publicUser(user) });
 });
 
@@ -426,13 +428,13 @@ authRouter.post('/recover', (req, res) => {
   const user = getUserByPhone(phone);
   if (!user) return res.status(404).json({ error: 'No account found' });
   if (!useRecoveryCode(user.id, code)) {
-    logSuspicious('recovery_fail', { phone, ip: String(req.ip || '') });
+    logSuspicious('recovery_fail', { phone, ip: getClientIp(req) });
     return res.status(403).json({ error: 'Invalid recovery code' });
   }
   const token = createSession(user.id, deviceLabelOf(req));
   const csrfToken = randomToken(32);
   setSessionCookies(res, token, csrfToken);
-  logSuspicious('auth_success_recovery', { userId: user.id, ip: String(req.ip || '') });
+  logSuspicious('auth_success_recovery', { userId: user.id, ip: getClientIp(req) });
   res.json({ user: publicUser(user) });
 });
 
@@ -499,7 +501,7 @@ const captchaChallenges = new Map<string, { answer: number; expiresAt: number }>
 const captchaIpCounts = new Map<string, { count: number; resetAt: number }>();
 
 authRouter.post('/captcha/challenge', (req, res) => {
-  const ip = String(req.ip || req.socket?.remoteAddress || 'unknown');
+  const ip = getClientIp(req);
   // Per-IP rate limit: max 10 captchas per minute
   const now = Date.now();
   const entry = captchaIpCounts.get(ip);
@@ -540,7 +542,7 @@ authRouter.post('/captcha/verify', (req, res) => {
   captchaChallenges.delete(token);
   if (Date.now() > challenge.expiresAt) return res.status(400).json({ error: 'Challenge expired' });
   if (answer !== challenge.answer) {
-    logSuspicious('captcha_failed', { ip: String(req.ip || '') });
+    logSuspicious('captcha_failed', { ip: getClientIp(req) });
     return res.status(400).json({ error: 'Incorrect answer', correct: false });
   }
   res.json({ ok: true, correct: true });
