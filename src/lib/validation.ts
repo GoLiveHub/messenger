@@ -129,8 +129,13 @@ export function validateBody(schema: z.ZodTypeAny) {
     const parsed = schema.safeParse(req.body ?? {});
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
-      const message = issue ? `${issue.path.join('.') || 'body'}: ${issue.message}` : 'Invalid request body';
-      log.warn('body_validation_failed', { requestId: req.id, path: req.path, message });
+      // Field-path is useful; framework-specific validator wording ("expected
+      // number, received NaN") is not — it leaks zod internals to attackers.
+      const field = issue?.path?.length ? issue.path.join('.') : 'body';
+      const message = parsed.error.issues.length > 1
+        ? 'Invalid request body'
+        : `Invalid value for '${field}'`;
+      log.warn('body_validation_failed', { requestId: req.id, path: req.path, code: issue?.code, field });
       res.status(400).json({ error: message });
       return;
     }

@@ -17,6 +17,7 @@ import {
   publicUser,
 } from './helpers.js';
 import { config } from './config.js';
+import { cacheDel, cacheGet, cacheSet } from './lib/redis.js';
 import { validatePhone } from './phone.js';
 import { getSmsProvider } from './lib/sms.js';
 import { createRateLimiter, type RateLimiter } from './lib/rateLimit.js';
@@ -525,7 +526,10 @@ function parseCookies(req: Request): Record<string, string> {
 const captchaChallenges = new Map<string, { answer: number; expiresAt: number }>();
 const captchaIpCounts = new Map<string, { count: number; resetAt: number }>();
 
-authRouter.post('/captcha/challenge', (req, res) => {
+const captchaTtlMs = 300_000;
+const captchaKey = (token: string) => `captcha:challenge:${token}`;
+
+authRouter.post('/captcha/challenge', (req, res, next) => {
   const ip = getClientIp(req);
   // Per-IP rate limit: max 10 captchas per minute
   const now = Date.now();
@@ -554,23 +558,47 @@ authRouter.post('/captcha/challenge', (req, res) => {
     question = `${Math.max(a, b)} - ${Math.min(a, b)} = ?`;
   }
   const token = randomToken(32);
-  captchaChallenges.set(token, { answer, expiresAt: Date.now() + 300_000 });
+  // Store challenge in the shared store (Redis when configured, else in-memory
+  // fallback) so a challenge issued on one instance can be verified on another.
+  cacheSet(captchaKey(token), String(answer), Math.ceil(captchaTtlMs / 1000)).catch((err) => {
+    next(new Error(`captcha store failed: ${String(err)}`));
+  });
+  captchaChallenges.set(token, { answer, expiresAt: Date.now() + captchaTtlMs });
   logSuspicious('captcha_challenge_issued', { ip });
   res.json({ token, question });
 });
 
-authRouter.post('/captcha/verify', (req, res) => {
+authRouter.post('/captcha/verify', (req, res, next) => {
   const token = String(req.body?.token ?? '');
   const answer = Number(req.body?.answer);
-  const challenge = captchaChallenges.get(token);
-  if (!challenge) return res.status(400).json({ error: 'Invalid or expired challenge' });
-  captchaChallenges.delete(token);
-  if (Date.now() > challenge.expiresAt) return res.status(400).json({ error: 'Challenge expired' });
-  if (answer !== challenge.answer) {
-    logSuspicious('captcha_failed', { ip: getClientIp(req) });
-    return res.status(400).json({ error: 'Incorrect answer', correct: false });
-  }
-  res.json({ ok: true, correct: true });
+  const checkStored = (stored: number | null): void => {
+    const challenge = stored != null ? { answer: stored } : captchaChallenges.get(token);
+    if (!challenge) return void res.status(400).json({ error: 'Invalid or expired challenge' });
+    // Challenge consumed on first use regardless of correctness.
+    captchaChallenges.delete(token);
+    cacheDel(captchaKey(token)).catch(() => {});
+    if (answer !== challenge.answer) {
+      logSuspicious('captcha_failed', { ip: getClientIp(req) });
+      return void res.status(400).json({ error: 'Incorrect answer', correct: false });
+    }
+    res.json({ ok: true, correct: true });
+  };
+  cacheGet(captchaKey(token)).then((raw) => {
+    checkStored(raw != null ? Number(raw) : null);
+  }).catch((err) => {
+    // Store unavailable: fall back to in-memory copy only.
+    if (captchaChallenges.has(token)) {
+      const c = captchaChallenges.get(token)!;
+      captchaChallenges.delete(token);
+      if (Date.now() > c.expiresAt) return res.status(400).json({ error: 'Challenge expired' });
+      if (answer !== c.answer) {
+        logSuspicious('captcha_failed', { ip: getClientIp(req) });
+        return res.status(400).json({ error: 'Incorrect answer', correct: false });
+      }
+      return res.json({ ok: true, correct: true });
+    }
+    next(new Error(`captcha store lookup failed: ${String(err)}`));
+  });
 });
 
 export { parseCookies, setSessionCookies, clearSessionCookies };
