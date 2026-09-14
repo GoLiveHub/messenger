@@ -344,6 +344,25 @@ test('production build serves the SPA with security headers', async (t) => {
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-type') ?? '', /text\/html/);
     assert.match(await page.text(), /<div id="root"><\/div>/);
+    assert.match(page.headers.get('cache-control') ?? '', /no-cache/);
+
+    // Junk paths the pentest flagged (SPA shell must NOT 200 for scanner noise).
+    for (const junk of ['/admin', '/swagger-ui/', '/v1/api/me', '//api/me', '/assets/notfound.js', '/favicon.ico', '/config.json', '/.env']) {
+      const junkRes = await fetch(`${baseUrl}${junk}`);
+      assert.equal(junkRes.status, 404, `${junk} should be 404 (got ${junkRes.status})`);
+    }
+
+    // Hashed build assets are served immutable (no re-download on reload).
+    const body = await (await fetch(baseUrl)).text();
+    const assetMatch = body.match(/src="(\/assets\/[^"]+\.js)"/) || body.match(/href="(\/assets\/[^"]+\.css)"/);
+    if (assetMatch) {
+      const assetRes = await fetch(`${baseUrl}${assetMatch[1]}`);
+      assert.equal(assetRes.status, 200, `asset ${assetMatch[1]} should exist`);
+      assert.match(assetRes.headers.get('cache-control') ?? '', /immutable|max-age=31/i);
+      // ETag present → browser revalidation path works for already-cached files.
+      const etag = assetRes.headers.get('etag');
+      assert.ok(etag, 'hashed asset should send ETag');
+    }
   } catch (error) {
     throw new Error(`${(error as Error).message}\nServer output:\n${logs}`);
   }

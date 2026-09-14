@@ -109,6 +109,16 @@ if (!config.isProduction) {
   app.use(cors({ origin: config.allowedOrigins, credentials: true }));
 }
 
+// --- Per-IP rate limit BEFORE body parsing ---
+// Applied first (even before express.json) so an unauthenticated attacker
+// flooding /api with multi-hundred-KB JSON bodies trips the limiter without
+// paying CPU/memory to parse bodies that will be rejected anyway.
+const RATE_LIMIT_EXEMPT = new Set(['/api/health', '/api/health/liveness', '/api/health/readiness']);
+app.use('/api', (req, res, next) => {
+  if (RATE_LIMIT_EXEMPT.has(req.baseUrl + req.path)) return next();
+  return globalRateLimit(req, res, next);
+});
+
 // JSON body parser with size limit
 app.use(express.json({ limit: '1mb' }));
 
@@ -186,7 +196,29 @@ app.use((req, res, next) => {
 app.get('/robots.txt', (_req, res) => {
   res.type('text/plain').send('User-agent: *\nDisallow: /\n');
 });
-app.use(express.static(distPath));
+app.use('/assets', express.static(path.join(distPath, 'assets'), {
+  // Hashed build output is content-addressed and immutable by design.
+  // Tell the browser (and any edge/CDN) it can cache forever — the mismatch
+  // the pentest saw (public,max-age=0 re-downloading 500KB on every reload)
+  // disappears because the filename itself is the version.
+  immutable: true,
+  maxAge: '31536000',
+  setHeaders: (res) => res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'),
+  etag: true,
+  lastModified: false,
+}));
+app.use(express.static(distPath, {
+  // Non-hashed files (index.html, favicon etc.) stay revalidable: ETag/304.
+  etag: true,
+  lastModified: true,
+  setHeaders: (res, filePath) => {
+    if (path.basename(filePath) === 'index.html') {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    } else {
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+    }
+  },
+}));
 
 // File upload (8 MB limit)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
@@ -319,11 +351,6 @@ async function globalRateLimit(req: express.Request, res: express.Response, next
 // Apply global rate limit to all API routes.
 // /api/health* is exempted: it is a required healthcheck surface for the
 // platform/load balancer and is exercised frequently by probes.
-const RATE_LIMIT_EXEMPT = new Set(['/api/health', '/api/health/liveness', '/api/health/readiness']);
-app.use('/api', (req, res, next) => {
-  if (RATE_LIMIT_EXEMPT.has(req.baseUrl + req.path)) return next();
-  return globalRateLimit(req, res, next);
-});
 
 // Per-authenticated-user rate limiter (defense-in-depth after the per-IP one,
 // so a single logged-in user cannot hammer the API from many shared IPs).
@@ -2850,10 +2877,36 @@ app.patch('/api/chats/:id', (req, res) => {
 
 registerSockets(io);
 
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api') || req.path.startsWith('/socket.io') || req.path.startsWith('/media')) return next();
+// SPA shell. Only serve index.html for requests that look like client-side
+// navigation (no file extension, no API/dot path). Everything else — missing
+// asset files, scanner junk like /admin or /swagger-ui/, path-extension
+// probing — gets a real 404 so crawlers/auditors don't see a 200 shell.
+app.get('*', async (req, res, next) => {
+  const p = req.path;
+  if (p.startsWith('/api') || p.startsWith('/socket.io') || p.startsWith('/media')) return next();
+
+  // Paths with a trailing extension are file requests (either a real static
+  // asset already handled by express.static, or junk). Never SPA-shell them.
+  const DOTFILE = /(?:^|\/)\.[^/]|\.(?:map|json|xml|txt|ini|conf|log|sql|bak|old|env|example|local|pdf|docx?|xls|zip|tar|gz|7z|rar|py|rb|php|asp|jsp|sh|bat)$/i;
+  const API_LIKE = /^\/[\d.]*api\/|^\/v\d+(\/\d+)*\/|^\/api$|^\/admin\b|^\/swagger|^\/graphql|^\/_next\/|^\/webpack|^\/\//;
+  if (DOTFILE.test(p) || API_LIKE.test(p)) {
+    return res.status(404).send('Not Found');
+  }
+
+  // Any other file-looking path (e.g. /favicon.ico, /cdn-cgi/...) that did not
+  // resolve through express.static is junk — 404, not the SPA shell.
+  const ext = path.extname(p);
+  if (ext) {
+    const onDisk = path.join(distPath, p);
+    if (onDisk.startsWith(distPath) && !(await fsp.access(onDisk).then(() => true).catch(() => false))) {
+      return res.status(404).send('Not Found');
+    }
+  }
+
+  // Serve the SPA shell only for extension-less navigation paths. If the file
+  // happens to exist it was already handled above by express.static.
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.sendFile(path.join(distPath, 'index.html'));
+  return res.sendFile(path.join(distPath, 'index.html'));
 });
 
 // --- sticker packs ---
