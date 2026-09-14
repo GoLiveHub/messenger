@@ -66,6 +66,20 @@ class MemoryClient implements RedisClient {
   async quit(): Promise<void> {
     this.store.clear();
   }
+
+  /** Fixed-window increment that is atomic and sets TTL on first hit. */
+  incrWindow(key: string, ttlMs: number): Promise<number> {
+    // Set TTL only if the key did not exist yet, so the window runs from the
+    // first request (fixed window), not sliding on every hit.
+    const existing = this.store.get(key);
+    if (!existing || this.isExpired(key)) {
+      this.store.set(key, { value: '1', expiresAt: Date.now() + ttlMs });
+      return Promise.resolve(1);
+    }
+    const val = parseInt(existing.value, 10) + 1;
+    this.store.set(key, { value: String(val), expiresAt: existing.expiresAt });
+    return Promise.resolve(val);
+  }
 }
 
 let client: RedisClient | null = null;
@@ -126,6 +140,39 @@ export async function cacheIncr(key: string): Promise<number> {
 
 export async function cacheExpire(key: string, ttlSeconds: number): Promise<void> {
   await (await getRedisClient()).expire(key, ttlSeconds);
+}
+
+/**
+ * Atomic fixed-window increment with TTL.
+ *
+ * Redis: a single Lua script (INCR + PEXPIRE only when the key is brand new)
+ * so concurrent replicas always agree on one shared count — no reset race, no
+ * per-instance windows when REDIS_URL is configured.
+ *
+ * In-memory fallback: MemoryClient#incrWindow has the identical semantics.
+ */
+export async function cacheIncrWindow(key: string, windowMs: number): Promise<number> {
+  const c = await getRedisClient();
+  if (typeof (c as any).incrWindow === 'function') {
+    return (c as any as { incrWindow(k: string, ms: number): Promise<number> }).incrWindow(key, windowMs);
+  }
+  // ioredis: atomic Lua.
+  const r = c as any;
+  if (typeof r.eval === 'function') {
+    const script = [
+      'local c = redis.call("INCR", KEYS[1])',
+      'if c == 1 then',
+      '  redis.call("PEXPIRE", KEYS[1], ARGV[1])',
+      'end',
+      'return c',
+    ].join('\n');
+    const res = await r.eval(script, 1, key, String(windowMs));
+    return Number(res ?? 0);
+  }
+  // Last-resort: INCR then conditional EXPIRE (best-effort on exotic clients).
+  const count = await c.incr(key);
+  if (count === 1) await c.expire(key, Math.max(1, Math.round(windowMs / 1000)));
+  return count;
 }
 
 // --- Presence tracking helpers ---

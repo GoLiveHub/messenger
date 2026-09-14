@@ -16,7 +16,7 @@ import { requestTimeout } from './lib/requestTimeout.js';
 import { incCounter, incGauge, observeHistogram, renderMetrics, setGauge } from './lib/prometheus.js';
 import { idempotencyMiddleware } from './lib/idempotency.js';
 import { validateBody, uploadInitSchema, uploadChunkSchema, uploadFinalizeSchema, createGroupSchema, createChatSchema, editChatSchema, signUpSchema, sendCodeSchema, safeMediaMime, isActiveContentType, detectImageMime } from './lib/validation.js';
-import { cacheGet, cacheSet, cacheIncr, cacheExpire, cacheDel } from './lib/redis.js';
+import { cacheIncrWindow, cacheGet, cacheSet, cacheDel } from './lib/redis.js';
 import {
   addBlock,
   addChatMember,
@@ -300,12 +300,11 @@ async function globalRateLimit(req: express.Request, res: express.Response, next
   } catch { /* fall through to IP-only bucket */ }
   const key = userId != null ? `ratelimit:api:${ip}:${userId}` : `ratelimit:api:${ip}`;
   try {
-    const count = await cacheIncr(key);
-    if (count === 1) await cacheExpire(key, 60);
+    const count = await cacheIncrWindow(key, 60_000);
     // Draft-8 RateLimit headers (RFC 6585 style)
     res.set('RateLimit-Limit', '300');
     res.set('RateLimit-Remaining', String(Math.max(0, 300 - count)));
-    res.set('RateLimit-Reset', String(60));
+    res.set('RateLimit-Reset', '60');
     if (count > 300) {
       log.suspicious('rate_limit_api', { ip, userId: userId ?? null, count });
       res.set('Retry-After', '60');
@@ -334,8 +333,7 @@ async function perUserRateLimit(req: express.Request, res: express.Response, nex
   if (!userId) return next();
   const key = `ratelimit:user:${userId}`;
   try {
-    const count = await cacheIncr(key);
-    if (count === 1) await cacheExpire(key, 60);
+    const count = await cacheIncrWindow(key, 60_000);
     if (count > PER_USER_LIMIT) {
       log.suspicious('rate_limit_user', { userId, count });
       res.set('Retry-After', '60');
@@ -804,7 +802,7 @@ app.post('/api/me/phone/request', async (req, res) => {
     return res.status(403).json({ error: 'Wrong password' });
   }
   const newPhone = validatePhone(String(req.body?.new_phone ?? ''));
-  if (!newPhone) return res.status(400).json({ error: 'Invalid phone number' });
+  if (!newPhone) return res.status(400).json({ error: 'invalid phone number format' });
   if (newPhone === user.phone) return res.status(400).json({ error: 'Same phone number' });
   const existing = getUserByPhone(newPhone);
   if (existing) return res.status(409).json({ error: 'This phone number is already registered' });
@@ -3822,15 +3820,23 @@ app.use(((error, req, res, _next) => {
   }
   // express.json(): payload too large -> 413 (not 500), malformed JSON -> 400
   const status: number = typeof error?.status === 'number' ? error.status : 0;
-  if (status === 413 || status === 400) {
-    const message = status === 413 ? 'Request entity too large' : 'Malformed JSON body';
-    return res.status(status).json({ error: message });
-  }
-  if (error?.type === 'entity.too.large') {
+  if (status === 413 || error?.type === 'entity.too.large') {
     return res.status(413).json({ error: 'Request entity too large' });
   }
-  if (error instanceof SyntaxError) {
+  // JSON parse failures from express.json() carry status 400 + type 'entity.parse.failed'.
+  // Detect them FIRST so we say "Malformed JSON body" instead of leaking the raw
+  // SyntaxError detail into the response.
+  if (error instanceof SyntaxError || error?.type === 'entity.parse.failed') {
     return res.status(400).json({ error: 'Malformed JSON body' });
+  }
+  if (status === 400) {
+    // Preserve the original message when it's a known business-logic 400
+    // (e.g. "phone is required", zod validation). Only fall back to a generic
+    // message when the error carries no meaningful detail.
+    const msg = (typeof error.message === 'string' && error.message && error.message !== 'Bad Request')
+      ? error.message
+      : 'Bad request';
+    return res.status(400).json({ error: msg });
   }
   return res.status(500).json({ error: t_server('server_error') });
 }) as express.ErrorRequestHandler);

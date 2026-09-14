@@ -23,6 +23,24 @@ import { createRateLimiter, type RateLimiter } from './lib/rateLimit.js';
 import { getClientIp } from './lib/ip.js';
 import { verifyTotp } from './lib/totp.js';
 
+/**
+ * Validate phone and return { phone, error? } with an appropriate message.
+ * - undefined / null / empty string → "phone is required"
+ * - non-string (object, number)     → "phone must be a string"
+ * - invalid E.164 format            → "invalid phone number format"
+ * - valid                           → { phone }
+ */
+function requirePhone(body: any): { ok: true; phone: string } | { ok: false; error: string } {
+  const raw = body?.phone;
+  if (raw === undefined || raw === null) return { ok: false, error: 'phone is required' };
+  if (typeof raw !== 'string') return { ok: false, error: 'phone must be a string' };
+  const trimmed = raw.trim();
+  if (!trimmed) return { ok: false, error: 'phone is required' };
+  const phone = validatePhone(trimmed);
+  if (!phone) return { ok: false, error: 'invalid phone number format' };
+  return { ok: true, phone };
+}
+
 export const authRouter = Router();
 
 const CODE_COOLDOWN_MS = 30_000; // min interval between codes per phone
@@ -214,18 +232,20 @@ function recoveryCodeCount(userId: number): number {
 
 // Step 0: check whether a phone number exists in the database.
 authRouter.post('/checkPhone', (req, res) => {
-  const phone = validatePhone(String(req.body?.phone ?? ''));
-  if (!phone) return res.status(400).json({ error: 'Invalid phone number' });
+  const parsed = requirePhone(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const { phone } = parsed;
   const user = getUserByPhone(phone);
   res.json({ registered: Boolean(user), phone });
 });
 
 // Step 1: request a login code
 authRouter.post('/sendCode', async (req, res) => {
-  const phone = validatePhone(String(req.body?.phone ?? ''));
-  if (!phone) {
-    return res.status(400).json({ error: 'Invalid phone number' });
+  const parsed = requirePhone(req.body);
+  if (!parsed.ok) {
+    return res.status(400).json({ error: parsed.error });
   }
+  const { phone } = parsed;
   const result = issueCode(phone);
   if (result.limitExceeded) {
     logSuspicious('code_send_limit', { phone, ip: getClientIp(req) });
@@ -291,10 +311,11 @@ async function verifyCodeInput(phone: string, code: string, phoneCodeHash: strin
 
 // Step 2: verify code -> create or sign into the account
 authRouter.post('/signIn', async (req, res) => {
-  const phone = validatePhone(String(req.body?.phone ?? ''));
+  const parsed = requirePhone(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const { phone } = parsed;
   const code = String(req.body?.code ?? '').trim();
   const phoneCodeHash = String(req.body?.phone_code_hash ?? '').trim();
-  if (!phone) return res.status(400).json({ error: 'Invalid phone number' });
   if (!await verifyCodeInput(phone, code, phoneCodeHash)) {
     return res.status(400).json({ error: 'Invalid or expired code' });
   }
@@ -330,12 +351,13 @@ function generateUsername(phone: string): string {
 }
 
 authRouter.post('/signUp', massRegistrationLimit, async (req, res) => {
-  const phone = validatePhone(String(req.body?.phone ?? ''));
+  const parsed = requirePhone(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const { phone } = parsed;
   const code = String(req.body?.code ?? '').trim();
   const phoneCodeHash = String(req.body?.phone_code_hash ?? '').trim();
   const firstName = String(req.body?.first_name ?? '').trim().slice(0, 64);
 
-  if (!phone) return res.status(400).json({ error: 'Invalid phone number' });
   if (!firstName) return res.status(400).json({ error: 'First name is required' });
   if (getUserByPhone(phone)) return res.status(409).json({ error: 'An account already exists for this phone' });
   const requestedUsername = String(req.body?.username ?? '').trim().replace(/^@/, '');
@@ -367,11 +389,12 @@ authRouter.post('/signUp', massRegistrationLimit, async (req, res) => {
 
 // Step 3 (2FA): check password
 authRouter.post('/checkPassword', async (req, res) => {
-  const phone = validatePhone(String(req.body?.phone ?? ''));
+  const parsed = requirePhone(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const { phone } = parsed;
   const code = String(req.body?.code ?? '').trim();
   const phoneCodeHash = String(req.body?.phone_code_hash ?? '').trim();
   const password = String(req.body?.password ?? '');
-  if (!phone) return res.status(400).json({ error: 'Invalid phone number' });
   if (!await verifyCodeInput(phone, code, phoneCodeHash)) {
     return res.status(400).json({ error: 'Invalid or expired code' });
   }
@@ -392,11 +415,12 @@ authRouter.post('/checkPassword', async (req, res) => {
 
 // Step 3b (TOTP): verify TOTP code
 authRouter.post('/verifyTotp', async (req, res) => {
-  const phone = validatePhone(String(req.body?.phone ?? ''));
+  const parsed = requirePhone(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const { phone } = parsed;
   const code = String(req.body?.code ?? '').trim();
   const phoneCodeHash = String(req.body?.phone_code_hash ?? '').trim();
   const totpToken = String(req.body?.totp_token ?? '').trim();
-  if (!phone) return res.status(400).json({ error: 'Invalid phone number' });
   if (!totpToken) return res.status(400).json({ error: 'TOTP code is required' });
   if (!await verifyCodeInput(phone, code, phoneCodeHash)) {
     return res.status(400).json({ error: 'Invalid or expired code' });
@@ -421,9 +445,10 @@ authRouter.post('/verifyTotp', async (req, res) => {
 
 // Step 4: account recovery via recovery code
 authRouter.post('/recover', (req, res) => {
-  const phone = validatePhone(String(req.body?.phone ?? ''));
+  const parsed = requirePhone(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const { phone } = parsed;
   const code = String(req.body?.code ?? '').trim();
-  if (!phone) return res.status(400).json({ error: 'Invalid phone number' });
   if (!code) return res.status(400).json({ error: 'Recovery code is required' });
   const user = getUserByPhone(phone);
   if (!user) return res.status(404).json({ error: 'No account found' });

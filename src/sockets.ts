@@ -24,7 +24,7 @@ import {
 import { logSuspicious } from './auth.js';
 import { isWebPushEnabled, sendPushToUser, isFCMEnabled, sendFCMToUser } from './push.js';
 import { decryptAtRest as _decryptAtRest } from './crypto.js';
-import { cacheIncr, cacheExpire } from './lib/redis.js';
+import { cacheIncrWindow } from './lib/redis.js';
 import { incCounter, setGauge } from './lib/prometheus.js';
 import { withRetry } from './lib/retry.js';
 
@@ -358,8 +358,7 @@ export function registerSockets(io: Server) {
     const eventReportKey = `ws:events:${selfId}`;
     async function checkEventBudget(): Promise<boolean> {
       try {
-        const count = await cacheIncr(eventReportKey);
-        if (count === 1) await cacheExpire(eventReportKey, 60);
+        const count = await cacheIncrWindow(eventReportKey, 60_000);
         return count <= 600; // 600 realtime events / minute / user
       } catch {
         return true; // Redis down → fail-open
