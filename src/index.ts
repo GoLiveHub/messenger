@@ -15,7 +15,7 @@ import { requestId } from './lib/requestId.js';
 import { requestTimeout } from './lib/requestTimeout.js';
 import { incCounter, incGauge, observeHistogram, renderMetrics, setGauge } from './lib/prometheus.js';
 import { idempotencyMiddleware } from './lib/idempotency.js';
-import { validateBody, uploadInitSchema, uploadChunkSchema, uploadFinalizeSchema, createGroupSchema, createChatSchema, editChatSchema, signUpSchema, sendCodeSchema, safeMediaMime, isActiveContentType } from './lib/validation.js';
+import { validateBody, uploadInitSchema, uploadChunkSchema, uploadFinalizeSchema, createGroupSchema, createChatSchema, editChatSchema, signUpSchema, sendCodeSchema, safeMediaMime, isActiveContentType, detectImageMime } from './lib/validation.js';
 import { cacheGet, cacheSet, cacheIncr, cacheExpire, cacheDel } from './lib/redis.js';
 import {
   addBlock,
@@ -224,6 +224,32 @@ const io = new Server(httpServer, {
   transports: ['websocket', 'polling'],
   allowUpgrades: true,
   perMessageDeflate: { threshold: 1024 }, // compress messages > 1KB
+  // Transport-level auth (engine.io allowRequest): the handshake must already
+  // prove possession of a valid session cookie (or Bearer token) and a proper
+  // Origin BEFORE any sid is issued. This kills the "101 + sid with no auth"
+  // primitive: unauth'd raw WS clients get a 401 here, not a sid.
+  allowRequest: (req, callback) => {
+    if (!config.isProduction) return callback(null, true);
+    const origin = String(req.headers?.origin || req.headers?.['sec-websocket-origin'] || '');
+    if (origin && !allowedWsOrigins.has(origin)) {
+      return callback('Cross-site WebSocket rejected', false);
+    }
+    // Native clients may omit Origin entirely — require a session instead.
+    const cookies = parseCookies(req as unknown as express.Request);
+    const cookieToken = cookies[config.sessionCookieName];
+    const bearer = String(req.headers?.authorization ?? '').startsWith('Bearer ')
+      ? String(req.headers?.authorization ?? '').slice(7)
+      : '';
+    let queryToken = '';
+    try {
+      queryToken = new URL(req.url ?? '', 'http://local').searchParams.get('token') ?? '';
+    } catch { /* ignore malformed URL */ }
+    const token = queryToken || cookieToken || bearer;
+    if (!token || !getUserIdByToken(token)) {
+      return callback('Unauthorized', false);
+    }
+    return callback(null, true);
+  },
 });
 
 // Redis adapter for multi-instance scaling (optional, requires REDIS_URL)
@@ -2481,6 +2507,9 @@ app.post('/api/media', upload.single('file'), async (req, res) => {
   if (kind === 'photo' && !req.file.mimetype.startsWith('image/')) {
     return res.status(400).json({ error: 'Photo uploads must use an image content type' });
   }
+  if (kind === 'photo' && !detectImageMime(req.file.buffer)) {
+    return res.status(400).json({ error: 'Uploaded bytes are not a supported image format' });
+  }
   if (kind === 'audio' && !req.file.mimetype.startsWith('audio/') && req.file.mimetype !== 'application/octet-stream') {
     return res.status(400).json({ error: 'Voice uploads must use an audio content type' });
   }
@@ -2951,10 +2980,14 @@ app.post('/api/gifs/attach', async (req, res) => {
     clearTimeout(timer);
   }
   if (!resp.ok) return res.status(502).json({ error: 'GIF fetch failed' });
-  const mime = resp.headers.get('content-type')?.split(';')[0]?.trim() ?? '';
-  if (!mime.startsWith('image/')) return res.status(400).json({ error: 'Not an image' });
+  const mimeHeader = resp.headers.get('content-type')?.split(';')[0]?.trim() ?? '';
   const buf = Buffer.from(await resp.arrayBuffer());
   if (buf.length === 0 || buf.length > 8_000_000) return res.status(400).json({ error: 'GIF is too large' });
+  // Trust the bytes, not the header: the allowlisted host could still serve
+  // anything, so verify the magic signature before storing/decoding.
+  const mime = detectImageMime(buf);
+  if (!mime) return res.status(400).json({ error: 'Not an image' });
+  if (!mimeHeader.startsWith('image/')) return res.status(400).json({ error: 'Not an image' });
   const enc = encryptAtRest(buf);
   const dims = extractImageDimensions(buf);
   let storageKey: string | null = null;

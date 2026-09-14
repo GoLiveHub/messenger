@@ -10,6 +10,7 @@ data:
   DATA_DIR: "/app/data"
   STORAGE_DIR: "/app/data/storage"
   DATA_RETENTION_DAYS: "30"
+  TRUST_PROXY: "1"
   VAPID_SUBJECT: "https://messenger.internal"
 ---
 apiVersion: v1

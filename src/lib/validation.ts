@@ -93,6 +93,27 @@ export const uploadInitSchema = z.object({
 export function safeMediaMime(mime: string | null | undefined, fallback = 'application/octet-stream'): string {
   return isActiveContentType(mime) ? fallback : (mime?.trim() ? mime.trim().toLowerCase() : fallback);
 }
+
+/**
+ * Magic-byte content sniffing — the mime type from the request header is NOT
+ * trusted (clients can submit image/png with polyglot/HTML payloads). Returns
+ * the real image type encoded in the first bytes, or null if the bytes don't
+ * match a supported image signature.
+ */
+export function detectImageMime(buf: Buffer): string | null {
+  if (buf.length < 8) return null;
+  // PNG 89 50 4E 47 0D 0A 1A 0A
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  // JPEG FF D8 FF
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  // GIF87a / GIF89a
+  if (buf.toString('ascii', 0, 6) === 'GIF87a' || buf.toString('ascii', 0, 6) === 'GIF89a') return 'image/gif';
+  // WebP: RIFF....WEBP
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  // BMP 42 4D
+  if (buf[0] === 0x42 && buf[1] === 0x4d) return 'image/bmp';
+  return null;
+}
 export const uploadChunkSchema = z.object({ uploadId: uploadId, chunkIndex: z.coerce.number().int().min(0).max(2048) });
 export const uploadFinalizeSchema = z.object({ uploadId: uploadId });
 

@@ -86,7 +86,12 @@ export function formatNational(national: string, groups: number[]): string {
 export function detectCountry(digits: string): PhoneCountry | null {
   const d = digitsOnly(digits);
   if (!d) return null;
-  const parsed = parsePhoneNumberFromString('+' + d);
+  let parsed;
+  try {
+    parsed = parsePhoneNumberFromString('+' + d);
+  } catch {
+    parsed = undefined;
+  }
   if (parsed?.country) {
     const exact = PHONE_COUNTRIES.find((country) => country.iso2 === parsed.country);
     if (exact) return exact;
@@ -98,8 +103,15 @@ export function detectCountry(digits: string): PhoneCountry | null {
 }
 
 export function validatePhone(raw: string): string | null {
-  const normalized = '+' + digitsOnly(raw);
-  const parsed = parsePhoneNumberFromString(normalized);
-  if (parsed?.isValid()) return parsed.number;
-  return null;
+  // libphonenumber-js can throw (RangeError) on malformed input like '+', 'abc',
+  // bare digits, country-code overflows, etc. Any parse failure = invalid phone.
+  let parsed;
+  try {
+    const normalized = '+' + digitsOnly(raw);
+    parsed = parsePhoneNumberFromString(normalized);
+  } catch {
+    return null;
+  }
+  if (!parsed?.isValid()) return null;
+  return parsed.number;
 }

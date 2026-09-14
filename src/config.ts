@@ -14,6 +14,13 @@ export const config = {
   redisUrl: process.env.REDIS_URL || '',
   serverSecret,
   exposeDevCode: process.env.EXPOSE_DEV_CODE === 'true',
+  // When set to '1', the server trusts X-Forwarded-For from the immediate
+  // reverse proxy / load balancer (nginx, Railway edge, Docker bridge) and uses
+  // it as the client identity for rate limiting. Default OFF: without this,
+  // every peer is bucketed by its socket address (trustProxy=false), so a
+  // client rotating X-Forwarded-For/X-Real-IP/CF-Connecting-Ip can never open
+  // fresh rate-limit buckets. Enable ONLY when a trusted proxy is in front.
+  trustProxy: process.env.TRUST_PROXY === '1',
   smsWebhookUrl: process.env.SMS_WEBHOOK_URL || '',
   smsWebhookToken: process.env.SMS_WEBHOOK_TOKEN || '',
   allowedOrigins: (process.env.ALLOWED_ORIGINS || 'http://127.0.0.1:5173,http://localhost:5173,http://messenger.local:5173')
