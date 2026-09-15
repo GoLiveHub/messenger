@@ -39,78 +39,54 @@ export function AuthPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [captchaToken, setCaptchaToken] = useState('');
-  const [captchaQuestion, setCaptchaQuestion] = useState('');
-  const [captchaAnswer, setCaptchaAnswer] = useState('');
-  const [showCaptcha, setShowCaptcha] = useState(false);
-  const [captchaVerified, setCaptchaVerified] = useState(false);
+  // Flood control: server returns 429 with retry_after_ms on too many code requests
+  const [floodWaitSecs, setFloodWaitSecs] = useState(0);
   const codeInputRef = useRef<HTMLInputElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const phone = useMemo(() => '+' + country.cc + nationalDigits, [country.cc, nationalDigits]);
   const phoneValid = validatePhone(phone) !== null;
 
-  const fetchCaptcha = async () => {
+  const handleSendCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    if (!phoneValid) return;
+    if (floodWaitSecs > 0) return;
+    setLoading(true);
     try {
-      const res = await fetch('/api/auth/captcha/challenge', { method: 'POST' });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error ? String(data.error) : t('Captcha could not be loaded. Try again.'));
-        return;
-      }
-      const data = await res.json();
-      setCaptchaToken(data.token);
-      setCaptchaQuestion(data.question);
-      setShowCaptcha(true);
-      setCaptchaAnswer('');
-      setError('');
-    } catch {
-      setError(t('Captcha could not be loaded. Try again.'));
-    }
-  };
-
-  const verifyCaptcha = async (): Promise<boolean> => {
-    if (!captchaToken || !captchaAnswer) return false;
-    try {
-      const res = await fetch('/api/auth/captcha/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: captchaToken, answer: Number(captchaAnswer) }),
-      });
-      const data = await res.json();
-      if (data.correct) {
-        setCaptchaVerified(true);
-        setShowCaptcha(false);
-        return true;
-      }
-      setError(t('Incorrect answer. Try again.'));
-      await fetchCaptcha();
-      return false;
-    } catch {
-      return false;
-    }
-  };
-
-  // Auto-send code after captcha is verified (avoids stale showCaptcha state)
-  useEffect(() => {
-    if (captchaVerified && step === 'phone' && phoneValid) {
-      setCaptchaVerified(false);
-      (async () => {
-        setLoading(true);
-        try {
-          const res = await api.sendCode(phone);
-          setPhoneCodeHash(res.phone_code_hash);
-          setCode(res.dev_code ?? '');
-          setStep('code');
-        } catch (err) {
-          const msg = (err as Error).message;
-          setError(msg.includes('Wait') ? t('Please wait before requesting another code.') : msg);
-        } finally {
-          setLoading(false);
+      const res = await api.sendCode(phone);
+      setPhoneCodeHash(res.phone_code_hash);
+      setCode(res.dev_code ?? '');
+      setStep('code');
+      setFloodWaitSecs(0);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes('Wait')) {
+        // Telegram-style: server told us to wait, show remaining seconds
+        const res = await fetch('/api/auth/sendCode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone }),
+        }).catch(() => null);
+        if (res && res.status === 429) {
+          const data = await res.json().catch(() => ({}));
+          const wait = Math.max(1, Math.ceil((Number(data?.retry_after_ms) || 30_000) / 1000));
+          setFloodWaitSecs(wait);
+          const id = setInterval(() => {
+            setFloodWaitSecs((s) => {
+              if (s <= 1) { clearInterval(id); return 0; }
+              return s - 1;
+            });
+          }, 1000);
         }
-      })();
+        setError(t('Please wait before requesting another code.'));
+      } else {
+        setError(msg);
+      }
+    } finally {
+      setLoading(false);
     }
-  }, [captchaVerified, step, phoneValid]);
+  };
 
   const onPhoneChange = (inputVal: string) => {
     const d = digitsOnly(inputVal);
@@ -133,30 +109,6 @@ export function AuthPage() {
     setCountry(c);
     setNationalDigits(nationalDigits.slice(0, c.max));
     setError('');
-  };
-
-  const handleSendCode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    if (!phoneValid) return;
-    // Show CAPTCHA challenge if not yet verified
-    if (!captchaVerified && !showCaptcha) {
-      await fetchCaptcha();
-      return;
-    }
-    if (showCaptcha) return; // waiting for CAPTCHA answer
-    setLoading(true);
-    try {
-      const res = await api.sendCode(phone);
-      setPhoneCodeHash(res.phone_code_hash);
-      setCode(res.dev_code ?? '');
-      setStep('code');
-    } catch (err) {
-      const msg = (err as Error).message;
-      setError(msg.includes('Wait') ? t('Please wait before requesting another code.') : msg);
-    } finally {
-      setLoading(false);
-    }
   };
 
   useEffect(() => {
@@ -318,47 +270,15 @@ export function AuthPage() {
                 />
               </div>
             </div>
-            {showCaptcha && (
+            {floodWaitSecs > 0 && (
               <div className="auth-field" style={{ marginTop: '0.75rem' }}>
-                <label style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', marginBottom: '0.25rem', display: 'block' }}>
-                  {t('Solve to prove you are human')}: <b>{captchaQuestion}</b>
+                <label style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                  {t('Too many attempts. Try again in %s seconds.').replace('%s', String(floodWaitSecs))}
                 </label>
-                <input
-                  value={captchaAnswer}
-                  onChange={(e) => setCaptchaAnswer(e.target.value)}
-                  inputMode="numeric"
-                  placeholder={t('Your answer')}
-                  autoFocus
-                  onKeyDown={async (e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      const ok = await verifyCaptcha();
-                      if (ok) {
-                        setShowCaptcha(false);
-                        // Auto-submit after captcha verification
-                        handleSendCode({ preventDefault: () => {} } as React.FormEvent);
-                      }
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const ok = await verifyCaptcha();
-                    if (ok) {
-                      setShowCaptcha(false);
-                      handleSendCode({ preventDefault: () => {} } as React.FormEvent);
-                    }
-                  }}
-                  disabled={!captchaAnswer}
-                  style={{ marginTop: '0.375rem' }}
-                >
-                  {t('Verify')}
-                </button>
               </div>
             )}
-            <button disabled={loading || !phoneValid}>
-              {loading ? t('Sending…') : t('Next')}
+            <button disabled={loading || !phoneValid || floodWaitSecs > 0}>
+              {loading ? t('Sending…') : floodWaitSecs > 0 ? t('Wait…') : t('Next')}
             </button>
           </form>
         )}

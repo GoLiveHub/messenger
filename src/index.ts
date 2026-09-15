@@ -425,7 +425,7 @@ function t_server(key: string, lang?: string): string {
 // ======================== AUTH MIDDLEWARE ========================
 
 // Paths that do NOT require authentication
-const PUBLIC_PATHS = new Set(['/api/health', '/api/health/liveness', '/api/health/readiness', '/api/metrics/prometheus', '/api/auth/checkPhone', '/api/auth/sendCode', '/api/auth/signIn', '/api/auth/signUp', '/api/auth/checkPassword', '/api/auth/captcha/challenge', '/api/auth/captcha/verify', '/api/auth/verifyTotp', '/api/auth/recover']);
+const PUBLIC_PATHS = new Set(['/api/health', '/api/health/liveness', '/api/health/readiness', '/api/metrics/prometheus', '/api/auth/checkPhone', '/api/auth/sendCode', '/api/auth/signIn', '/api/auth/signUp', '/api/auth/checkPassword', '/api/auth/verifyTotp', '/api/auth/recover']);
 
 function getOriginalPath(req: express.Request): string {
   return req.baseUrl + req.path;

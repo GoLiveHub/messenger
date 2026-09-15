@@ -17,7 +17,7 @@ const uploadId = z.string().regex(/^u_\d+_\d+_[a-z0-9]{6}$/);
 
 // --- Auth ---
 export const checkPhoneSchema = z.object({ phone: z.string().min(5).max(32) });
-export const sendCodeSchema = z.object({ phone: z.string().min(5).max(32), captchaToken: z.string().nullish(), captchaId: z.string().nullish() });
+export const sendCodeSchema = z.object({ phone: z.string().min(5).max(32) });
 export const signUpSchema = z.object({
   phone: z.string().min(5).max(32),
   code: z.string().min(1).max(16),
