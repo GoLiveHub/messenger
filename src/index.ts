@@ -1,4 +1,4 @@
-import express from 'express';
+﻿import express from 'express';
 import cors from 'cors';
 import http from 'node:http';
 import path from 'node:path';
@@ -104,7 +104,7 @@ app.use((_req, res, next) => {
   next();
 });
 
-// CORS (development only — production uses same-origin with HTTPS)
+// CORS (development only вЂ” production uses same-origin with HTTPS)
 if (!config.isProduction) {
   app.use(cors({ origin: config.allowedOrigins, credentials: true }));
 }
@@ -174,7 +174,7 @@ app.use('/api', (req, res, next) => {
 // Static files
 const distPath = path.resolve(process.cwd(), 'dist');
 
-// 404 for sensitive/secret-looking paths instead of serving the SPA shell —
+// 404 for sensitive/secret-looking paths instead of serving the SPA shell вЂ”
 // avoids leaking "this is a Node app at <path>" info to scanners.
 const SENSITIVE_PATH = new Set(['/.env', '/.git/HEAD', '/.git/config', '/.svn/entries', '/.DS_Store', '/composer.lock', '/package-lock.json', '/yarn.lock', '/phpinfo.php', '/wp-login.php', '/server-status', '/actuator', '/vendor/']);
 app.use((req, res, next) => {
@@ -198,7 +198,7 @@ app.get('/robots.txt', (_req, res) => {
 });
 app.use('/assets', express.static(path.join(distPath, 'assets'), {
   // Hashed build output is content-addressed and immutable by design.
-  // Tell the browser (and any edge/CDN) it can cache forever — the mismatch
+  // Tell the browser (and any edge/CDN) it can cache forever вЂ” the mismatch
   // the pentest saw (public,max-age=0 re-downloading 500KB on every reload)
   // disappears because the filename itself is the version.
   immutable: true,
@@ -266,7 +266,7 @@ const io = new Server(httpServer, {
     if (origin && !allowedWsOrigins.has(origin)) {
       return callback('Cross-site WebSocket rejected', false);
     }
-    // Native clients may omit Origin entirely — require a session instead.
+    // Native clients may omit Origin entirely вЂ” require a session instead.
     const cookies = parseCookies(req as unknown as express.Request);
     const cookieToken = cookies[config.sessionCookieName];
     const bearer = String(req.headers?.authorization ?? '').startsWith('Bearer ')
@@ -343,7 +343,7 @@ async function globalRateLimit(req: express.Request, res: express.Response, next
       return res.status(429).json({ error: t_server('rate_limit') });
     }
   } catch {
-    // Redis unavailable — skip rate limiting gracefully
+    // Redis unavailable вЂ” skip rate limiting gracefully
   }
   next();
 }
@@ -367,7 +367,7 @@ async function perUserRateLimit(req: express.Request, res: express.Response, nex
       return res.status(429).json({ error: t_server('rate_limit') });
     }
   } catch {
-    // Redis unavailable — skip per-user limiting gracefully
+    // Redis unavailable вЂ” skip per-user limiting gracefully
   }
   next();
 }
@@ -396,25 +396,25 @@ const SERVER_ERRORS: Record<string, Record<string, string>> = {
     too_many_attempts: 'Too many attempts. Try again later.',
   },
   'ru': {
-    unauthorized: 'Не авторизован',
-    not_found: 'Не найдено',
-    rate_limit: 'Слишком много запросов. Замедлитесь.',
-    server_error: 'Ошибка сервера',
-    too_many_messages: 'Слишком много сообщений. Замедлитесь.',
-    new_account_restriction: 'Новые аккаунты не могут писать в группах/каналах 24 часа',
-    spam_detected: 'Вы отправляете сообщения слишком быстро. Замедлитесь.',
-    empty_message: 'Пустое сообщение',
-    message_too_long: 'Сообщение слишком длинное',
-    blacklisted_url: 'Сообщение содержит запрещённую ссылку',
-    cannot_edit: 'Нельзя редактировать чужие сообщения',
-    cannot_delete: 'Нельзя удалять чужие сообщения',
-    no_such_chat: 'Чат не найден',
-    no_such_message: 'Сообщение не найдено',
-    user_not_found: 'Пользователь не найден',
-    username_taken: 'Имя пользователя занято',
-    invalid_phone: 'Неверный номер телефона',
-    code_expired: 'Код истёк или неверный',
-    too_many_attempts: 'Слишком много попыток. Попробуйте позже.',
+    unauthorized: 'РќРµ Р°РІС‚РѕСЂРёР·РѕРІР°РЅ',
+    not_found: 'РќРµ РЅР°Р№РґРµРЅРѕ',
+    rate_limit: 'РЎР»РёС€РєРѕРј РјРЅРѕРіРѕ Р·Р°РїСЂРѕСЃРѕРІ. Р—Р°РјРµРґР»РёС‚РµСЃСЊ.',
+    server_error: 'РћС€РёР±РєР° СЃРµСЂРІРµСЂР°',
+    too_many_messages: 'РЎР»РёС€РєРѕРј РјРЅРѕРіРѕ СЃРѕРѕР±С‰РµРЅРёР№. Р—Р°РјРµРґР»РёС‚РµСЃСЊ.',
+    new_account_restriction: 'РќРѕРІС‹Рµ Р°РєРєР°СѓРЅС‚С‹ РЅРµ РјРѕРіСѓС‚ РїРёСЃР°С‚СЊ РІ РіСЂСѓРїРїР°С…/РєР°РЅР°Р»Р°С… 24 С‡Р°СЃР°',
+    spam_detected: 'Р’С‹ РѕС‚РїСЂР°РІР»СЏРµС‚Рµ СЃРѕРѕР±С‰РµРЅРёСЏ СЃР»РёС€РєРѕРј Р±С‹СЃС‚СЂРѕ. Р—Р°РјРµРґР»РёС‚РµСЃСЊ.',
+    empty_message: 'РџСѓСЃС‚РѕРµ СЃРѕРѕР±С‰РµРЅРёРµ',
+    message_too_long: 'РЎРѕРѕР±С‰РµРЅРёРµ СЃР»РёС€РєРѕРј РґР»РёРЅРЅРѕРµ',
+    blacklisted_url: 'РЎРѕРѕР±С‰РµРЅРёРµ СЃРѕРґРµСЂР¶РёС‚ Р·Р°РїСЂРµС‰С‘РЅРЅСѓСЋ СЃСЃС‹Р»РєСѓ',
+    cannot_edit: 'РќРµР»СЊР·СЏ СЂРµРґР°РєС‚РёСЂРѕРІР°С‚СЊ С‡СѓР¶РёРµ СЃРѕРѕР±С‰РµРЅРёСЏ',
+    cannot_delete: 'РќРµР»СЊР·СЏ СѓРґР°Р»СЏС‚СЊ С‡СѓР¶РёРµ СЃРѕРѕР±С‰РµРЅРёСЏ',
+    no_such_chat: 'Р§Р°С‚ РЅРµ РЅР°Р№РґРµРЅ',
+    no_such_message: 'РЎРѕРѕР±С‰РµРЅРёРµ РЅРµ РЅР°Р№РґРµРЅРѕ',
+    user_not_found: 'РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ',
+    username_taken: 'РРјСЏ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ Р·Р°РЅСЏС‚Рѕ',
+    invalid_phone: 'РќРµРІРµСЂРЅС‹Р№ РЅРѕРјРµСЂ С‚РµР»РµС„РѕРЅР°',
+    code_expired: 'РљРѕРґ РёСЃС‚С‘Рє РёР»Рё РЅРµРІРµСЂРЅС‹Р№',
+    too_many_attempts: 'РЎР»РёС€РєРѕРј РјРЅРѕРіРѕ РїРѕРїС‹С‚РѕРє. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ.',
   },
 };
 function t_server(key: string, lang?: string): string {
@@ -500,7 +500,7 @@ function csrfProtection(req: express.Request, res: express.Response, next: expre
 // Apply CSRF protection after auth (auth sets userId needed for logging)
 app.use('/api', auth, csrfProtection, perUserRateLimit, idempotencyMiddleware);
 
-// Mutating requests must carry a JSON object body (or none) — never an array,
+// Mutating requests must carry a JSON object body (or none) вЂ” never an array,
 // a primitive or a string that `req.body.foo` would throw on.
 app.use('/api', (req, res, next) => {
   const hasBody = req.headers['content-length'] !== undefined || req.body !== undefined || typeof req.body === 'object';
@@ -1750,7 +1750,7 @@ app.patch('/api/groups/:id', (req, res) => {
   if (title !== (chat.title ?? '') && title) {
     const me = getUserById(selfId);
     const meName = me ? [me.first_name, me.last_name].filter(Boolean).join(' ') || me.username || 'Someone' : 'Someone';
-    insertServiceMessage(io, chatId, selfId, `${meName} renamed the group to “${title}”`);
+    insertServiceMessage(io, chatId, selfId, `${meName} renamed the group to вЂњ${title}вЂќ`);
   }
   res.json(info);
 });
@@ -2219,7 +2219,7 @@ app.delete('/api/chats/:chatId/emoji/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// delete the chat for the current user (Telegram "Delete chat for me"); for groups — leave
+// delete the chat for the current user (Telegram "Delete chat for me"); for groups вЂ” leave
 app.delete('/api/chats/:id', (req, res) => {
   const selfId = (req as any).userId;
   const chatId = Number(req.params.id);
@@ -2733,7 +2733,7 @@ app.get('/api/media/:id', async (req, res) => {
   const mime = media.mime || 'application/octet-stream';
   const mimeSafeHeader = safeMediaMime(mime, 'application/octet-stream');
   // Never serve active content (HTML/SVG/XML/JS) inline from object storage /
-  // DB blobs — always degrade to download-only + sandbox. This is the final
+  // DB blobs вЂ” always degrade to download-only + sandbox. This is the final
   // chokepoint, so even legacy rows or a single-upload route that stored the
   // caller-supplied mime can never become stored-XSS on the app origin.
   const isActive = isActiveContentType(mime);
@@ -2801,7 +2801,7 @@ app.post('/api/media/:id/normalize-audio', (req, res) => {
       if (s > peak) peak = s;
     }
     if (peak > 0) {
-      // Target: -1 dBFS ≈ 0.891 × 32768 ≈ 29186
+      // Target: -1 dBFS в‰€ 0.891 Г— 32768 в‰€ 29186
       const targetPeak = 29186;
       const gain = targetPeak / peak;
       if (gain > 1.01 || gain < 0.99) {
@@ -2881,9 +2881,9 @@ app.patch('/api/chats/:id', (req, res) => {
 registerSockets(io);
 
 // SPA shell. Only serve index.html for requests that look like client-side
-// navigation (no file extension, no API/dot path). Everything else — missing
+// navigation (no file extension, no API/dot path). Everything else вЂ” missing
 // asset files, scanner junk like /admin or /swagger-ui/, path-extension
-// probing — gets a real 404 so crawlers/auditors don't see a 200 shell.
+// probing вЂ” gets a real 404 so crawlers/auditors don't see a 200 shell.
 app.get('*', async (req, res, next) => {
   const p = req.path;
   if (p.startsWith('/api') || p.startsWith('/socket.io') || p.startsWith('/media')) return next();
@@ -2897,7 +2897,7 @@ app.get('*', async (req, res, next) => {
   }
 
   // Any other file-looking path (e.g. /favicon.ico, /cdn-cgi/...) that did not
-  // resolve through express.static is junk — 404, not the SPA shell.
+  // resolve through express.static is junk вЂ” 404, not the SPA shell.
   const ext = path.extname(p);
   if (ext) {
     const onDisk = path.join(distPath, p);
@@ -3729,7 +3729,7 @@ function gracefulShutdown(signal: string) {
     process.exit(0);
   });
 
-  // Force exit after 15 seconds (was 5s — extra time for WS close handshake + graceful drain).
+  // Force exit after 15 seconds (was 5s вЂ” extra time for WS close handshake + graceful drain).
   setTimeout(() => {
     log.error('forced shutdown after timeout');
     process.exit(1);
@@ -3880,221 +3880,6 @@ app.get('/api/link-preview', async (req, res) => {
   }
 });
 
-app.use('/api', (_req, res) => res.status(404).json({ error: 'API route not found' }));
-
-app.use(((error, req, res, _next) => {
-  log.error('unhandled request error', { error: String(error), stack: error.stack, requestId: req.id, path: req.path, method: req.method });
-  if (error instanceof multer.MulterError) {
-    return res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: error.message });
-  }
-  // express.json(): payload too large -> 413 (not 500), malformed JSON -> 400
-  const status: number = typeof error?.status === 'number' ? error.status : 0;
-  if (status === 413 || error?.type === 'entity.too.large') {
-    return res.status(413).json({ error: 'Request entity too large' });
-  }
-  // JSON parse failures from express.json() carry status 400 + type 'entity.parse.failed'.
-  // Detect them FIRST so we say "Malformed JSON body" instead of leaking the raw
-  // SyntaxError detail into the response.
-  if (error instanceof SyntaxError || error?.type === 'entity.parse.failed') {
-    return res.status(400).json({ error: 'Malformed JSON body' });
-  }
-  if (status === 400) {
-    // Preserve the original message when it's a known business-logic 400
-    // (e.g. "phone is required", zod validation). Only fall back to a generic
-    // message when the error carries no meaningful detail.
-    const msg = (typeof error.message === 'string' && error.message && error.message !== 'Bad Request')
-      ? error.message
-      : 'Bad request';
-    return res.status(400).json({ error: msg });
-  }
-  return res.status(500).json({ error: t_server('server_error') });
-}) as express.ErrorRequestHandler);
-
-// --- scheduled message sender (check every 15s) ---
-setInterval(() => {
-  try {
-    const pending = db.prepare(`SELECT * FROM scheduled_messages WHERE sent = 0 AND scheduled_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')`).all() as any[];
-    for (const sm of pending) {
-      try {
-        if (!getChatForUser(sm.chat_id, sm.user_id)) { db.prepare('UPDATE scheduled_messages SET sent = 1 WHERE id = ?').run(sm.id); continue; }
-        db.prepare('UPDATE scheduled_messages SET sent = 1 WHERE id = ?').run(sm.id);
-        const nowIso = new Date().toISOString();
-        const enc = encryptAtRest(sm.body ?? '');
-        const media = sm.media_id ? getMediaById(Number(sm.media_id)) : null;
-        const hashtags = Array.isArray(sm.hashtags) ? sm.hashtags : [];
-        const text = sm.body ?? '';
-        const insertRes = db.prepare('INSERT INTO messages (chat_id, sender_id, body, iv, media_id, reply_to, delivered_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(sm.chat_id, sm.user_id, enc.body, enc.iv, sm.media_id || null, sm.reply_to || null, nowIso, nowIso);
-        const message = {
-          id: Number(insertRes.lastInsertRowid),
-          chat_id: sm.chat_id,
-          sender_id: sm.user_id,
-          client_id: null,
-          sender_user: senderUserDTO(Number(sm.user_id)),
-          created_at: nowIso,
-          delivered_at: nowIso,
-          read_at: null,
-          text,
-          expires_at: null,
-          media: media ? serializeMedia(media) : null,
-          reply_to: sm.reply_to ? Number(sm.reply_to) : null,
-          thread_id: null,
-          topic_id: null,
-          hashtags,
-          forwarded_from: null,
-          reactions: [],
-        };
-        try {
-          db.prepare('INSERT INTO messages_fts (rowid, chat_id, sender_id, text_content, created_at) VALUES (?, ?, ?, ?, ?)')
-            .run(message.id, sm.chat_id, sm.user_id, text, nowIso);
-        } catch { /* ignore FTS errors */ }
-        io.to(`chat:${sm.chat_id}`).emit('message:new', message);
-        try { db.prepare("UPDATE chats SET last_message_at = datetime('now') WHERE id = ?").run(sm.chat_id); } catch { /* ignore */ }
-        log.suspicious('scheduled_message_sent', { userId: sm.user_id, chatId: sm.chat_id, smId: sm.id });
-      } catch (e) {
-        log.error('failed to send scheduled message', { smId: sm.id, error: String(e) });
-      }
-    }
-  } catch { /* ignore */ }
-}, 15_000);
-
-// ======================== PUSH DLQ RETRY ========================
-// Retry failed push deliveries (max 5 attempts; poison messages dropped).
-setInterval(async () => {
-  try {
-    const due = db
-      .prepare(`SELECT * FROM push_dlq WHERE next_retry_at <= datetime('now') AND attempts < 5 ORDER BY next_retry_at LIMIT 200`)
-      .all() as Array<{ id: number; user_id: number; channel: string; target: string; payload: string; attempts: number }>;
-    for (const item of due) {
-      try {
-        let ok = false;
-        let causeMsg = 'push dlq retry failed';
-        let payload: Record<string, unknown> = {};
-        try { payload = JSON.parse(item.payload); } catch { payload = {}; }
-        if (item.channel === 'webpush') {
-          const row = db.prepare('SELECT p256dh, auth FROM push_subscriptions WHERE endpoint = ?').get(item.target) as { p256dh: string; auth: string } | undefined;
-          if (row) {
-            const r = await awaitSendWebPush(item.target, row.p256dh, row.auth, payload);
-            ok = r.ok;
-            if (r.status === 404 || r.status === 410) db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(item.target);
-            causeMsg = r.status ? `HTTP ${r.status}` : causeMsg;
-          } else {
-            ok = true; // endpoint gone — nothing to retry
-          }
-        } else if (item.channel === 'fcm') {
-          const r = await sendFCM([item.target], payload, item.user_id);
-          ok = r.ok;
-        } else if (item.channel === 'apns') {
-          const r = await sendAPNs([item.target], { title: String(payload.title ?? 'Messenger'), body: String(payload.body ?? 'New message') });
-          ok = r.ok;
-        }
-        if (ok) {
-          db.prepare('DELETE FROM push_dlq WHERE id = ?').run(item.id);
-        } else {
-          const nextDelay = Math.min(60_000 * 2 ** (item.attempts + 1), 3_600_000);
-          db.prepare(`UPDATE push_dlq SET attempts = attempts + 1, last_error = ?, next_retry_at = datetime('now', ?) WHERE id = ?`)
-            .run(causeMsg.slice(0, 500), `+${Math.round(nextDelay / 1000)} seconds`, item.id);
-        }
-      } catch (e) {
-        log.error('push dlq item failed', { dlqId: item.id, error: String(e) });
-        db.prepare(`UPDATE push_dlq SET attempts = attempts + 1, next_retry_at = datetime('now', '+10 minutes') WHERE id = ?`).run(item.id);
-      }
-    }
-    // Drop poison messages (attempts >= 5)
-    db.prepare('DELETE FROM push_dlq WHERE attempts >= 5').run();
-  } catch { /* ignore */ }
-}, 30_000);
-
-function awaitSendWebPush(endpoint: string, p256dh: string, auth: string, payload: Record<string, unknown>): Promise<{ ok: boolean; status?: number }> {
-  return sendWebPush(endpoint, p256dh, auth, payload).catch(() => ({ ok: false }));
-}
-
-// ======================== DATA RETENTION ========================
-setInterval(() => {
-  try {
-    const retentionDays = config.dataRetentionDays;
-    if (retentionDays <= 0) return;
-    const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
-    // Delete old messages and their media
-    const mediaRows = db.prepare('SELECT id, storage_key FROM media WHERE id IN (SELECT media_id FROM messages WHERE created_at < ?)').all(cutoff) as { id: number; storage_key?: string }[];
-    const msgResult = db.prepare(`DELETE FROM messages WHERE created_at < ?`).run(cutoff);
-    // Delete storage blobs for purged media
-    for (const m of mediaRows) {
-      if (m.storage_key) deleteFile(m.storage_key).catch(() => {});
-    }
-    if (mediaRows.length > 0) {
-      try { db.prepare(`DELETE FROM media WHERE id IN (${mediaRows.map(() => '?').join(',')})`).run(...mediaRows.map((m) => m.id)); } catch { /* ignore */ }
-    }
-    // Purge old auth codes and phone_change_codes
-    db.prepare("DELETE FROM auth_codes WHERE expires_at < datetime('now', '-1 day')").run();
-    db.prepare("DELETE FROM phone_change_codes WHERE expires_at < datetime('now', '-1 day')").run();
-    // Purge expired sessions
-    db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
-    // Purge old suspicious events (keep 30 days)
-    db.prepare("DELETE FROM suspicious_events WHERE created_at < datetime('now', '-30 days')").run();
-    // Purge old admin log (keep 90 days)
-    try { db.prepare("DELETE FROM admin_log WHERE created_at < datetime('now', '-90 days')").run(); } catch { /* ignore */ }
-    // Purge old signed prekeys (keep 30 days) — clients rotate weekly
-    try { db.prepare("DELETE FROM e2e_signed_prekeys WHERE created_at < datetime('now', '-30 days')").run(); } catch { /* ignore */ }
-    // Purge consumed one-time prekeys
-    try { db.prepare('DELETE FROM e2e_one_time_prekeys WHERE consumed = 1').run(); } catch { /* ignore */ }
-    // Purge expired idempotency keys (24h TTL)
-    try { db.prepare("DELETE FROM idempotency_keys WHERE created_at < datetime('now', '-1 day')").run(); } catch { /* ignore */ }
-    // Purge old push DLQ entries (>7 days)
-    try { db.prepare("DELETE FROM push_dlq WHERE created_at < datetime('now', '-7 days')").run(); } catch { /* ignore */ }
-    // Auto-archive chats inactive for >30 days (direct chats only)
-    try {
-      const staleChats = db.prepare(`
-        SELECT id, user_a_id, user_b_id FROM chats
-        WHERE kind = 'regular' AND last_message_at IS NOT NULL
-        AND last_message_at < datetime('now', '-30 days')
-        AND archived_a = 0 AND archived_b = 0
-      `).all() as { id: number; user_a_id: number; user_b_id: number }[];
-      for (const ch of staleChats) {
-        if (ch.user_b_id) {
-          db.prepare('UPDATE chats SET archived_a = 1 WHERE id = ? AND archived_a = 0').run(ch.id);
-          db.prepare('UPDATE chats SET archived_b = 1 WHERE id = ? AND archived_b = 0').run(ch.id);
-        }
-      }
-      if (staleChats.length > 0) log.info(`auto_archive: archived ${staleChats.length} inactive chats`);
-    } catch { /* ignore */ }
-    if (msgResult.changes > 0) {
-      log.info(`data_retention: purged ${msgResult.changes} old messages`);
-    }
-  } catch (e) {
-    log.error('data_retention_error', { error: String(e) });
-  }
-}, 3_600_000); // Run every hour
-
-// ======================== AUTO BACKUP ========================
-// Every 6h: full SQLite snapshot via VACUUM INTO (consistent even in WAL mode),
-// keep the newest 5 snapshots locally and optionally push to S3-compatible
-// object storage (STORAGE_DRIVER=s3 + S3_* env vars). Does not stop the server.
-setInterval(async () => {
-  try {
-    const backupDir = path.join('data', 'backups');
-    await fsp.mkdir(backupDir, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupPath = path.join(backupDir, `auto-${stamp}.db`);
-    // Force a WAL checkpoint first so the snapshot is complete
-    try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* WAL not in use */ }
-    db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
-    const stat = await fsp.stat(backupPath);
-    log.info(`auto_backup: created ${backupPath} (${(stat.size / 1024).toFixed(1)} KB)`);
-    // Push to S3 if configured (best-effort, fire-and-forget)
-    uploadFile(`backups/auto-${stamp}.db`, await fsp.readFile(backupPath), 'application/octet-stream')
-      .then((key) => log.info(`auto_backup: pushed to object storage key=${key}`))
-      .catch((e: any) => log.debug('auto_backup_s3_skip', { reason: String(e) }));
-    // Rotate: keep only the newest 5 local auto-*.db
-    const files = (await fsp.readdir(backupDir)).filter((f) => f.startsWith('auto-') && f.endsWith('.db')).sort();
-    for (let i = 0; i < files.length - 5; i += 1) {
-      await fsp.unlink(path.join(backupDir, files[i])).catch(() => {});
-    }
-  } catch (e) {
-    log.error('auto_backup_error', { error: String(e) });
-  }
-}, 6 * 3_600_000);
-
 // --- Admin: data retention ---
 app.get('/api/admin/data-retention', (req, res) => {
   const selfId = (req as any).userId;
@@ -4224,3 +4009,219 @@ app.get('/api/admin/backups', async (req, res) => {
     res.status(500).json({ error: String(e) });
   }
 });
+
+app.use('/api', (_req, res) => res.status(404).json({ error: 'API route not found' }));
+
+app.use(((error, req, res, _next) => {
+  log.error('unhandled request error', { error: String(error), stack: error.stack, requestId: req.id, path: req.path, method: req.method });
+  if (error instanceof multer.MulterError) {
+    return res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: error.message });
+  }
+  // express.json(): payload too large -> 413 (not 500), malformed JSON -> 400
+  const status: number = typeof error?.status === 'number' ? error.status : 0;
+  if (status === 413 || error?.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request entity too large' });
+  }
+  // JSON parse failures from express.json() carry status 400 + type 'entity.parse.failed'.
+  // Detect them FIRST so we say "Malformed JSON body" instead of leaking the raw
+  // SyntaxError detail into the response.
+  if (error instanceof SyntaxError || error?.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Malformed JSON body' });
+  }
+  if (status === 400) {
+    // Preserve the original message when it's a known business-logic 400
+    // (e.g. "phone is required", zod validation). Only fall back to a generic
+    // message when the error carries no meaningful detail.
+    const msg = (typeof error.message === 'string' && error.message && error.message !== 'Bad Request')
+      ? error.message
+      : 'Bad request';
+    return res.status(400).json({ error: msg });
+  }
+  return res.status(500).json({ error: t_server('server_error') });
+}) as express.ErrorRequestHandler);
+
+// --- scheduled message sender (check every 15s) ---
+setInterval(() => {
+  try {
+    const pending = db.prepare(`SELECT * FROM scheduled_messages WHERE sent = 0 AND scheduled_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')`).all() as any[];
+    for (const sm of pending) {
+      try {
+        if (!getChatForUser(sm.chat_id, sm.user_id)) { db.prepare('UPDATE scheduled_messages SET sent = 1 WHERE id = ?').run(sm.id); continue; }
+        db.prepare('UPDATE scheduled_messages SET sent = 1 WHERE id = ?').run(sm.id);
+        const nowIso = new Date().toISOString();
+        const enc = encryptAtRest(sm.body ?? '');
+        const media = sm.media_id ? getMediaById(Number(sm.media_id)) : null;
+        const hashtags = Array.isArray(sm.hashtags) ? sm.hashtags : [];
+        const text = sm.body ?? '';
+        const insertRes = db.prepare('INSERT INTO messages (chat_id, sender_id, body, iv, media_id, reply_to, delivered_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(sm.chat_id, sm.user_id, enc.body, enc.iv, sm.media_id || null, sm.reply_to || null, nowIso, nowIso);
+        const message = {
+          id: Number(insertRes.lastInsertRowid),
+          chat_id: sm.chat_id,
+          sender_id: sm.user_id,
+          client_id: null,
+          sender_user: senderUserDTO(Number(sm.user_id)),
+          created_at: nowIso,
+          delivered_at: nowIso,
+          read_at: null,
+          text,
+          expires_at: null,
+          media: media ? serializeMedia(media) : null,
+          reply_to: sm.reply_to ? Number(sm.reply_to) : null,
+          thread_id: null,
+          topic_id: null,
+          hashtags,
+          forwarded_from: null,
+          reactions: [],
+        };
+        try {
+          db.prepare('INSERT INTO messages_fts (rowid, chat_id, sender_id, text_content, created_at) VALUES (?, ?, ?, ?, ?)')
+            .run(message.id, sm.chat_id, sm.user_id, text, nowIso);
+        } catch { /* ignore FTS errors */ }
+        io.to(`chat:${sm.chat_id}`).emit('message:new', message);
+        try { db.prepare("UPDATE chats SET last_message_at = datetime('now') WHERE id = ?").run(sm.chat_id); } catch { /* ignore */ }
+        log.suspicious('scheduled_message_sent', { userId: sm.user_id, chatId: sm.chat_id, smId: sm.id });
+      } catch (e) {
+        log.error('failed to send scheduled message', { smId: sm.id, error: String(e) });
+      }
+    }
+  } catch { /* ignore */ }
+}, 15_000);
+
+// ======================== PUSH DLQ RETRY ========================
+// Retry failed push deliveries (max 5 attempts; poison messages dropped).
+setInterval(async () => {
+  try {
+    const due = db
+      .prepare(`SELECT * FROM push_dlq WHERE next_retry_at <= datetime('now') AND attempts < 5 ORDER BY next_retry_at LIMIT 200`)
+      .all() as Array<{ id: number; user_id: number; channel: string; target: string; payload: string; attempts: number }>;
+    for (const item of due) {
+      try {
+        let ok = false;
+        let causeMsg = 'push dlq retry failed';
+        let payload: Record<string, unknown> = {};
+        try { payload = JSON.parse(item.payload); } catch { payload = {}; }
+        if (item.channel === 'webpush') {
+          const row = db.prepare('SELECT p256dh, auth FROM push_subscriptions WHERE endpoint = ?').get(item.target) as { p256dh: string; auth: string } | undefined;
+          if (row) {
+            const r = await awaitSendWebPush(item.target, row.p256dh, row.auth, payload);
+            ok = r.ok;
+            if (r.status === 404 || r.status === 410) db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(item.target);
+            causeMsg = r.status ? `HTTP ${r.status}` : causeMsg;
+          } else {
+            ok = true; // endpoint gone вЂ” nothing to retry
+          }
+        } else if (item.channel === 'fcm') {
+          const r = await sendFCM([item.target], payload, item.user_id);
+          ok = r.ok;
+        } else if (item.channel === 'apns') {
+          const r = await sendAPNs([item.target], { title: String(payload.title ?? 'Messenger'), body: String(payload.body ?? 'New message') });
+          ok = r.ok;
+        }
+        if (ok) {
+          db.prepare('DELETE FROM push_dlq WHERE id = ?').run(item.id);
+        } else {
+          const nextDelay = Math.min(60_000 * 2 ** (item.attempts + 1), 3_600_000);
+          db.prepare(`UPDATE push_dlq SET attempts = attempts + 1, last_error = ?, next_retry_at = datetime('now', ?) WHERE id = ?`)
+            .run(causeMsg.slice(0, 500), `+${Math.round(nextDelay / 1000)} seconds`, item.id);
+        }
+      } catch (e) {
+        log.error('push dlq item failed', { dlqId: item.id, error: String(e) });
+        db.prepare(`UPDATE push_dlq SET attempts = attempts + 1, next_retry_at = datetime('now', '+10 minutes') WHERE id = ?`).run(item.id);
+      }
+    }
+    // Drop poison messages (attempts >= 5)
+    db.prepare('DELETE FROM push_dlq WHERE attempts >= 5').run();
+  } catch { /* ignore */ }
+}, 30_000);
+
+function awaitSendWebPush(endpoint: string, p256dh: string, auth: string, payload: Record<string, unknown>): Promise<{ ok: boolean; status?: number }> {
+  return sendWebPush(endpoint, p256dh, auth, payload).catch(() => ({ ok: false }));
+}
+
+// ======================== DATA RETENTION ========================
+setInterval(() => {
+  try {
+    const retentionDays = config.dataRetentionDays;
+    if (retentionDays <= 0) return;
+    const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
+    // Delete old messages and their media
+    const mediaRows = db.prepare('SELECT id, storage_key FROM media WHERE id IN (SELECT media_id FROM messages WHERE created_at < ?)').all(cutoff) as { id: number; storage_key?: string }[];
+    const msgResult = db.prepare(`DELETE FROM messages WHERE created_at < ?`).run(cutoff);
+    // Delete storage blobs for purged media
+    for (const m of mediaRows) {
+      if (m.storage_key) deleteFile(m.storage_key).catch(() => {});
+    }
+    if (mediaRows.length > 0) {
+      try { db.prepare(`DELETE FROM media WHERE id IN (${mediaRows.map(() => '?').join(',')})`).run(...mediaRows.map((m) => m.id)); } catch { /* ignore */ }
+    }
+    // Purge old auth codes and phone_change_codes
+    db.prepare("DELETE FROM auth_codes WHERE expires_at < datetime('now', '-1 day')").run();
+    db.prepare("DELETE FROM phone_change_codes WHERE expires_at < datetime('now', '-1 day')").run();
+    // Purge expired sessions
+    db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
+    // Purge old suspicious events (keep 30 days)
+    db.prepare("DELETE FROM suspicious_events WHERE created_at < datetime('now', '-30 days')").run();
+    // Purge old admin log (keep 90 days)
+    try { db.prepare("DELETE FROM admin_log WHERE created_at < datetime('now', '-90 days')").run(); } catch { /* ignore */ }
+    // Purge old signed prekeys (keep 30 days) вЂ” clients rotate weekly
+    try { db.prepare("DELETE FROM e2e_signed_prekeys WHERE created_at < datetime('now', '-30 days')").run(); } catch { /* ignore */ }
+    // Purge consumed one-time prekeys
+    try { db.prepare('DELETE FROM e2e_one_time_prekeys WHERE consumed = 1').run(); } catch { /* ignore */ }
+    // Purge expired idempotency keys (24h TTL)
+    try { db.prepare("DELETE FROM idempotency_keys WHERE created_at < datetime('now', '-1 day')").run(); } catch { /* ignore */ }
+    // Purge old push DLQ entries (>7 days)
+    try { db.prepare("DELETE FROM push_dlq WHERE created_at < datetime('now', '-7 days')").run(); } catch { /* ignore */ }
+    // Auto-archive chats inactive for >30 days (direct chats only)
+    try {
+      const staleChats = db.prepare(`
+        SELECT id, user_a_id, user_b_id FROM chats
+        WHERE kind = 'regular' AND last_message_at IS NOT NULL
+        AND last_message_at < datetime('now', '-30 days')
+        AND archived_a = 0 AND archived_b = 0
+      `).all() as { id: number; user_a_id: number; user_b_id: number }[];
+      for (const ch of staleChats) {
+        if (ch.user_b_id) {
+          db.prepare('UPDATE chats SET archived_a = 1 WHERE id = ? AND archived_a = 0').run(ch.id);
+          db.prepare('UPDATE chats SET archived_b = 1 WHERE id = ? AND archived_b = 0').run(ch.id);
+        }
+      }
+      if (staleChats.length > 0) log.info(`auto_archive: archived ${staleChats.length} inactive chats`);
+    } catch { /* ignore */ }
+    if (msgResult.changes > 0) {
+      log.info(`data_retention: purged ${msgResult.changes} old messages`);
+    }
+  } catch (e) {
+    log.error('data_retention_error', { error: String(e) });
+  }
+}, 3_600_000); // Run every hour
+
+// ======================== AUTO BACKUP ========================
+// Every 6h: full SQLite snapshot via VACUUM INTO (consistent even in WAL mode),
+// keep the newest 5 snapshots locally and optionally push to S3-compatible
+// object storage (STORAGE_DRIVER=s3 + S3_* env vars). Does not stop the server.
+setInterval(async () => {
+  try {
+    const backupDir = path.join('data', 'backups');
+    await fsp.mkdir(backupDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = path.join(backupDir, `auto-${stamp}.db`);
+    // Force a WAL checkpoint first so the snapshot is complete
+    try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* WAL not in use */ }
+    db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+    const stat = await fsp.stat(backupPath);
+    log.info(`auto_backup: created ${backupPath} (${(stat.size / 1024).toFixed(1)} KB)`);
+    // Push to S3 if configured (best-effort, fire-and-forget)
+    uploadFile(`backups/auto-${stamp}.db`, await fsp.readFile(backupPath), 'application/octet-stream')
+      .then((key) => log.info(`auto_backup: pushed to object storage key=${key}`))
+      .catch((e: any) => log.debug('auto_backup_s3_skip', { reason: String(e) }));
+    // Rotate: keep only the newest 5 local auto-*.db
+    const files = (await fsp.readdir(backupDir)).filter((f) => f.startsWith('auto-') && f.endsWith('.db')).sort();
+    for (let i = 0; i < files.length - 5; i += 1) {
+      await fsp.unlink(path.join(backupDir, files[i])).catch(() => {});
+    }
+  } catch (e) {
+    log.error('auto_backup_error', { error: String(e) });
+  }
+}, 6 * 3_600_000);
+
