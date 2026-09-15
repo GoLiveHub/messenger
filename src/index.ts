@@ -3754,8 +3754,7 @@ httpServer.listen(config.port, '0.0.0.0', () => {
   // already contains rows (0/0/0 after a fresh deploy strongly suggests the
   // Railway volume isn't mounted at DB_PATH's directory).
   try {
-    const p = require('node:path') as typeof import('node:path');
-    const resolved = p.resolve(config.dbPath);
+    const resolved = path.resolve(config.dbPath);
     const users = (db.prepare('SELECT COUNT(*) AS c FROM users').get() as { c: number }).c;
     const chats = (db.prepare('SELECT COUNT(*) AS c FROM chats').get() as { c: number }).c;
     const messages = (db.prepare('SELECT COUNT(*) AS c FROM messages').get() as { c: number }).c;
