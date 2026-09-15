@@ -3750,6 +3750,20 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 httpServer.listen(config.port, '0.0.0.0', () => {
   log.info(`listening on http://localhost:${config.port}`);
   log.suspicious('server_start', { port: config.port, production: config.isProduction });
+  // Persistence diagnostics: which file backs chat/session data, and whether it
+  // already contains rows (0/0/0 after a fresh deploy strongly suggests the
+  // Railway volume isn't mounted at DB_PATH's directory).
+  try {
+    const p = require('node:path') as typeof import('node:path');
+    const resolved = p.resolve(config.dbPath);
+    const users = (db.prepare('SELECT COUNT(*) AS c FROM users').get() as { c: number }).c;
+    const chats = (db.prepare('SELECT COUNT(*) AS c FROM chats').get() as { c: number }).c;
+    const messages = (db.prepare('SELECT COUNT(*) AS c FROM messages').get() as { c: number }).c;
+    const sessions = (db.prepare('SELECT COUNT(*) AS c FROM sessions').get() as { c: number }).c;
+    log.info(`db_status path=${resolved} users=${users} chats=${chats} messages=${messages} sessions=${sessions}`);
+  } catch (err) {
+    log.info(`db_status read failed: ${String(err)}`);
+  }
 });
 
 // --- Folder Filters ---
@@ -4157,6 +4171,33 @@ app.post('/api/admin/restore', async (req, res) => {
     res.json({ ok: true, restored: backupName, safetyBackup: safetyPath });
   } catch (e) {
     res.status(500).json({ error: 'Restore failed: ' + String(e) });
+  }
+});
+
+app.get('/api/admin/db-status', async (req, res) => {
+  const selfId = (req as any).userId;
+  if (!isAdmin(selfId)) return res.status(403).json({ error: 'Admin only' });
+  try {
+    const fsp = await import('node:fs/promises');
+    const resolved = path.resolve(config.dbPath);
+    let stat = null;
+    try { stat = await fsp.stat(resolved); } catch { /* missing */ }
+    const counts: Record<string, number> = {};
+    for (const t of ['users', 'chats', 'messages', 'sessions', 'media', 'chat_members']) {
+      try { counts[t] = (db.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get() as { c: number }).c; } catch { counts[t] = -1; }
+    }
+    const sid = await import('./lib/redis.js').then((m) => m.getRedisClient().catch(() => null));
+    res.json({
+      db_path: resolved,
+      db_exists: Boolean(stat),
+      db_size_bytes: stat?.size ?? 0,
+      db_modified_at: stat?.mtime ? stat.mtime.toISOString() : null,
+      counts,
+      redis_configured: Boolean(config.redisUrl),
+      storage_dir: path.resolve(process.env.STORAGE_DIR || path.join(process.cwd(), 'data', 'storage')),
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'db-status failed: ' + String(e) });
   }
 });
 
