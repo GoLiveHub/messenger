@@ -2518,14 +2518,9 @@ app.post('/api/media', upload.single('file'), async (req, res) => {
   const chatId = Number(req.body?.chatId);
   const kind = String(req.body?.kind ?? 'file');
   if (!['photo', 'file', 'audio'].includes(kind)) return res.status(400).json({ error: 'Invalid media kind' });
-  const chat = getChatForUser(chatId, selfId);
-  if (!chat) return res.status(404).json({ error: 'Chat not found' });
-  if (!isGroupChat(chat)) {
-    const peerId = chat.user_a_id === selfId ? chat.user_b_id : chat.user_a_id;
-    if (peerId && (isBlocked(selfId, peerId) || isBlocked(peerId, selfId))) {
-      return res.status(403).json({ error: 'You cannot send media to this user' });
-    }
-  }
+  // Validate payload FIRST (independent of chat lookup): a malformed file must
+  // fail identically for every chatId, so /api/media cannot be used as an
+  // oracle to enumerate which chat IDs exist.
   if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
     return res.status(400).json({ error: 'No file' });
   }
@@ -2547,6 +2542,14 @@ app.post('/api/media', upload.single('file'), async (req, res) => {
     // Rough fallback when no duration field: assume >= 32 kbps => 4000 bytes/sec
     if (durMs === null && req.file.size > (MAX_AUDIO_MS / 1000) * 4000) {
       return res.status(400).json({ error: 'Audio file exceeds 5 minutes limit' });
+    }
+  }
+  const chat = getChatForUser(chatId, selfId);
+  if (!chat) return res.status(404).json({ error: 'Chat not found' });
+  if (!isGroupChat(chat)) {
+    const peerId = chat.user_a_id === selfId ? chat.user_b_id : chat.user_a_id;
+    if (peerId && (isBlocked(selfId, peerId) || isBlocked(peerId, selfId))) {
+      return res.status(403).json({ error: 'You cannot send media to this user' });
     }
   }
   const enc = encryptAtRest(req.file.buffer);
