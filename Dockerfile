@@ -28,12 +28,16 @@ COPY --from=builder /app/dist-server/ dist-server/
 ENV NODE_ENV=production
 ENV PORT=3001
 
-# Non-root user + writable data dir
+# Non-root user + writable data dir.
+# NOTE: Railway mounts the Volume over /app/data as root, which would make the
+# SQLite database unwritable for a non-root user. Running as root keeps the
+# volume usable; if you re-enable `USER appuser`, wire an entrypoint that
+# chowns /app/data (as root) before dropping privileges.
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
     && mkdir -p /app/data /app/data/storage /app/data/backups \
     && chown -R appuser:appgroup /app/data
 
-USER appuser
+USER root
 
 EXPOSE 3001
 
