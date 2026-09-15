@@ -3759,7 +3759,19 @@ httpServer.listen(config.port, '0.0.0.0', () => {
     const chats = (db.prepare('SELECT COUNT(*) AS c FROM chats').get() as { c: number }).c;
     const messages = (db.prepare('SELECT COUNT(*) AS c FROM messages').get() as { c: number }).c;
     const sessions = (db.prepare('SELECT COUNT(*) AS c FROM sessions').get() as { c: number }).c;
-    log.info(`db_status path=${resolved} users=${users} chats=${chats} messages=${messages} sessions=${sessions}`);
+    let mounts = '';
+    let dbSize = 0;
+    (async () => {
+      try {
+        const fsp = await import('node:fs/promises');
+        const st = await fsp.stat(resolved).catch(() => null);
+        dbSize = st?.size ?? 0;
+        const mountInfo = await fsp.readFile('/proc/mounts', 'utf8').catch(() => '');
+        mounts = mountInfo.split('\n').filter((l) => /\/app\/data|\/data\b|\/app\b|\/ / .test(l) && l).join(' | ');
+      } catch { /* best effort */ }
+      log.info(`db_status path=${resolved} size=${dbSize} users=${users} chats=${chats} messages=${messages} sessions=${sessions}`);
+      if (mounts) log.info(`db_status mounts: ${mounts}`);
+    })();
   } catch (err) {
     log.info(`db_status read failed: ${String(err)}`);
   }
