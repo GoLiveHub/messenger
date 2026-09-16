@@ -15,7 +15,7 @@ export const db = new DatabaseSync(config.dbPath);
 db.exec(`
   PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
-  PRAGMA synchronous = NORMAL;
+  PRAGMA synchronous = FULL;
   PRAGMA busy_timeout = 5000;
 
   CREATE TABLE IF NOT EXISTS users (

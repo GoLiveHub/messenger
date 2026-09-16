@@ -3718,6 +3718,10 @@ function gracefulShutdown(signal: string) {
   // 1. Tell all connected clients to drain (no more sends).
   try { io.emit('server:draining', { reason: 'server restart' }); } catch { /* ignore */ }
 
+  // 1b. Flush the WAL into the main DB file so a redeploy/hard kill cannot
+  // leave committed rows trapped in messenger.db-wal on an ephemeral mount.
+  try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
+
   // 2. Reject new connections; stop accepting new HTTP requests.
   httpServer.close(() => {
     log.info('HTTP server closed');
@@ -4212,6 +4216,12 @@ setInterval(() => {
 // Every 6h: full SQLite snapshot via VACUUM INTO (consistent even in WAL mode),
 // keep the newest 5 snapshots locally and optionally push to S3-compatible
 // object storage (STORAGE_DRIVER=s3 + S3_* env vars). Does not stop the server.
+// Every 30s: fold the WAL into the main DB file so committed rows survive a
+// hard kill/redeploy even if graceful shutdown does not run to completion.
+setInterval(() => {
+  try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* WAL not in use */ }
+}, 30_000);
+
 setInterval(async () => {
   try {
     const backupDir = path.join('data', 'backups');
