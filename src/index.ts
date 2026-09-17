@@ -62,7 +62,7 @@ import {
   reactionGroups,
   senderUserDTO,
 } from './helpers.js';
-import { db } from './db.js';
+import { db, flushDb } from './db.js';
 import { decryptAtRest, encryptAtRest, generateCode, hashPassword, sha256Hex, verifyPassword, randomToken } from './crypto.js';
 import { validatePhone } from './phone.js';
 import { getVapidPublicKey, isWebPushEnabled, sendPushToUser, sendWebPush, sendFCM, sendAPNs } from './push.js';
@@ -3718,9 +3718,9 @@ function gracefulShutdown(signal: string) {
   // 1. Tell all connected clients to drain (no more sends).
   try { io.emit('server:draining', { reason: 'server restart' }); } catch { /* ignore */ }
 
-  // 1b. Flush the WAL into the main DB file so a redeploy/hard kill cannot
-  // leave committed rows trapped in messenger.db-wal on an ephemeral mount.
-  try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
+  // 1b. Commit any open transaction, then flush the WAL into the main DB file
+  // so a redeploy/hard kill cannot leave committed rows trapped in the WAL.
+  flushDb();
 
   // 2. Reject new connections; stop accepting new HTTP requests.
   httpServer.close(() => {
@@ -3754,6 +3754,9 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 httpServer.listen(config.port, '0.0.0.0', () => {
   log.info(`listening on http://localhost:${config.port}`);
   log.suspicious('server_start', { port: config.port, production: config.isProduction });
+  // Commit the freshly-created schema + WAL to the main DB file so a redeploy
+  // before the first 30s tick cannot reset the database.
+  flushDb();
   // Persistence diagnostics: which file backs chat/session data, and whether it
   // already contains rows (0/0/0 after a fresh deploy strongly suggests the
   // Railway volume isn't mounted at DB_PATH's directory).
@@ -4218,8 +4221,9 @@ setInterval(() => {
 // object storage (STORAGE_DRIVER=s3 + S3_* env vars). Does not stop the server.
 // Every 30s: fold the WAL into the main DB file so committed rows survive a
 // hard kill/redeploy even if graceful shutdown does not run to completion.
+// flushDb() first COMMITs any leaked-open transaction, then checkpoints.
 setInterval(() => {
-  try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* WAL not in use */ }
+  flushDb();
 }, 30_000);
 
 setInterval(async () => {
@@ -4229,7 +4233,7 @@ setInterval(async () => {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupPath = path.join(backupDir, `auto-${stamp}.db`);
     // Force a WAL checkpoint first so the snapshot is complete
-    try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* WAL not in use */ }
+    flushDb();
     db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
     const stat = await fsp.stat(backupPath);
     log.info(`auto_backup: created ${backupPath} (${(stat.size / 1024).toFixed(1)} KB)`);

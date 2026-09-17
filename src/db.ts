@@ -230,34 +230,40 @@ function migrateChatsTable() {
   const names = new Set(colRows.map((c) => c.name));
   if (names.has('title')) return;
   db.exec('PRAGMA foreign_keys = OFF');
-  db.exec(`
-    BEGIN;
-    ALTER TABLE chats RENAME TO chats_old;
-    CREATE TABLE chats (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      kind       TEXT NOT NULL CHECK (kind IN ('regular', 'secret', 'group', 'channel')),
-      user_a_id  INTEGER NOT NULL REFERENCES users(id),
-      user_b_id  INTEGER REFERENCES users(id),
-      hidden_a   INTEGER NOT NULL DEFAULT 0,
-      hidden_b   INTEGER NOT NULL DEFAULT 0,
-      archived_a INTEGER NOT NULL DEFAULT 0,
-      archived_b INTEGER NOT NULL DEFAULT 0,
-      pinned_a   INTEGER NOT NULL DEFAULT 0,
-      pinned_b   INTEGER NOT NULL DEFAULT 0,
-      title      TEXT,
-      about      TEXT NOT NULL DEFAULT '',
-      photo      TEXT,
-      username   TEXT,
-      pinned_id  INTEGER,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    INSERT INTO chats (id, kind, user_a_id, user_b_id, hidden_a, hidden_b, archived_a, archived_b, pinned_a, pinned_b, created_at)
-      SELECT id, kind, user_a_id, user_b_id, hidden_a, hidden_b, archived_a, archived_b, pinned_a, pinned_b, created_at FROM chats_old;
-    DROP TABLE chats_old;
-    CREATE INDEX IF NOT EXISTS idx_chats_pair ON chats (user_a_id, user_b_id, kind);
-    COMMIT;
-  `);
-  db.exec('PRAGMA foreign_keys = ON');
+  try {
+    db.exec(`
+      BEGIN;
+      ALTER TABLE chats RENAME TO chats_old;
+      CREATE TABLE chats (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind       TEXT NOT NULL CHECK (kind IN ('regular', 'secret', 'group', 'channel')),
+        user_a_id  INTEGER NOT NULL REFERENCES users(id),
+        user_b_id  INTEGER REFERENCES users(id),
+        hidden_a   INTEGER NOT NULL DEFAULT 0,
+        hidden_b   INTEGER NOT NULL DEFAULT 0,
+        archived_a INTEGER NOT NULL DEFAULT 0,
+        archived_b INTEGER NOT NULL DEFAULT 0,
+        pinned_a   INTEGER NOT NULL DEFAULT 0,
+        pinned_b   INTEGER NOT NULL DEFAULT 0,
+        title      TEXT,
+        about      TEXT NOT NULL DEFAULT '',
+        photo      TEXT,
+        username   TEXT,
+        pinned_id  INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO chats (id, kind, user_a_id, user_b_id, hidden_a, hidden_b, archived_a, archived_b, pinned_a, pinned_b, created_at)
+        SELECT id, kind, user_a_id, user_b_id, hidden_a, hidden_b, archived_a, archived_b, pinned_a, pinned_b, created_at FROM chats_old;
+      DROP TABLE chats_old;
+      CREATE INDEX IF NOT EXISTS idx_chats_pair ON chats (user_a_id, user_b_id, kind);
+      COMMIT;
+    `);
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch { /* no transaction active */ }
+    throw e;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
 }
 migrateChatsTable();
 
@@ -347,6 +353,9 @@ function repairDanglingFks() {
         COMMIT;
       `);
     }
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch { /* no transaction active */ }
+    throw e;
   } finally {
     db.exec('PRAGMA foreign_keys = ON');
   }
@@ -768,7 +777,10 @@ function migrateReactionsTable() {
       ALTER TABLE reactions_new RENAME TO reactions;
       COMMIT;
     `);
-  } catch { /* keep legacy table on failure */ }
+  } catch {
+    try { db.exec('ROLLBACK'); } catch { /* no transaction active */ }
+    /* keep legacy table on failure */ 
+  }
   finally {
     db.exec('PRAGMA foreign_keys = ON');
   }
@@ -838,6 +850,7 @@ function migrateEditorRole() {
       COMMIT;
     `);
   } catch {
+    try { db.exec('ROLLBACK'); } catch { /* no transaction active */ }
     // If rebuild fails, the old constraint is still in place
   } finally {
     db.exec('PRAGMA foreign_keys = ON');
@@ -878,3 +891,18 @@ try { db.exec("ALTER TABLE media ADD COLUMN thumbnail BLOB"); } catch { /* alrea
 // --- Chat last_message_at for auto-archive ---
 try { db.exec("ALTER TABLE chats ADD COLUMN last_message_at TEXT"); } catch { /* already exists */ }
 try { db.exec("UPDATE chats SET last_message_at = (SELECT MAX(created_at) FROM messages WHERE messages.chat_id = chats.id) WHERE last_message_at IS NULL"); } catch { /* ignore */ }
+
+// --- Safety net: never serve with a leaked open transaction ---
+// If any migration script failed after BEGIN but its error was swallowed, the
+// transaction stays open on this single connection. That hides all later writes
+// (visible to us, never committed: WAL stays empty, other writers get
+// SQLITE_BUSY) and breaks durability on redeploy. Commit any leftover work now.
+try { db.exec('COMMIT'); } catch { /* no open transaction */ }
+
+// Commit any still-open transaction (e.g. from a partially executed migration,
+// or a route that ended without COMMIT) and then fold the WAL into the main DB
+// file so committed rows survive a redeploy/hard kill.
+export function flushDb() {
+  try { db.exec('COMMIT'); } catch { /* no open transaction */ }
+  try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* WAL not in use */ }
+}
